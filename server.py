@@ -334,7 +334,9 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         print(f"[WS] kicked old session for {username} ({spid})", flush=True)
         await _broadcast(build_id, {"type": "left", "player_id": spid})
 
-    _rooms[build_id][player_id] = {
+    # Use setdefault in case a zombie coroutine's finally deleted the room dict
+    # between the eviction broadcast (where we yield) and here.
+    _rooms.setdefault(build_id, {})[player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
     }
