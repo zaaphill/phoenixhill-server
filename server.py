@@ -293,10 +293,7 @@ async def _stale_cleanup_task():
                     players.pop(pid, None)
                     print(f"[WS] stale evict {pdata['username']} from room {build_id}", flush=True)
                     await _broadcast(build_id, {"type": "left", "player_id": pid})
-                    try:
-                        await pdata["ws"].close()
-                    except Exception:
-                        pass
+                    # Don't close the WebSocket — same race condition risk as on-join eviction.
             if build_id in _rooms and not _rooms[build_id]:
                 del _rooms[build_id]
 
@@ -330,19 +327,18 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         _rooms[build_id] = {}
 
     # Evict any previous connection for this user — you can only be in a room once.
-    stale_pids = [
-        pid for pid, d in list(_rooms[build_id].items())
-        if d["username"] == username
-    ]
-    for spid in stale_pids:
-        old = _rooms[build_id].pop(spid, None)
-        print(f"[WS] evicting stale {username} ({spid}) from room {build_id}", flush=True)
-        await _broadcast(build_id, {"type": "left", "player_id": spid})
-        if old:
-            try:
-                await old["ws"].close()
-            except Exception:
-                pass
+    # We just pop and broadcast "left"; we do NOT close the old WebSocket because
+    # closing it triggers its finally block which may delete _rooms[build_id] before
+    # we add the new entry below.  The old handler detects eviction on its next move
+    # message (entry is None → break) and exits cleanly on its own.
+    for spid, old in list(_rooms[build_id].items()):
+        if old["username"] == username:
+            _rooms[build_id].pop(spid, None)
+            print(f"[WS] evicting {username} ({spid}) from room {build_id}", flush=True)
+            await _broadcast(build_id, {"type": "left", "player_id": spid})
+
+    if build_id not in _rooms:   # safety: re-create if last eviction emptied+deleted it
+        _rooms[build_id] = {}
 
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
