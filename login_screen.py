@@ -916,7 +916,15 @@ class LoginScreenMixin:
 
     def _return_to_menu(self):
         """Called from the Menu button in the top bar."""
+        token    = getattr(self, "_session_token", None)
+        build_id = getattr(self, "_mp_build_id",   None)
         self.stop_multiplayer()
+        if token and build_id:
+            threading.Thread(
+                target=auth_client.leave_room,
+                args=(token, build_id),
+                daemon=True,
+            ).start()
         self.character.hide()
         self.is_playtest   = False
         self._clear_all_bricks()
