@@ -192,12 +192,22 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
     def userExit(self):
         """Called when the window X button is clicked."""
+        import asyncio
         thread = getattr(self, "_mp_thread", None)
+        loop   = getattr(self, "_mp_loop",   None)
+        ws     = getattr(self, "_ws",        None)
         if getattr(self, "_mp_connected", False):
-            # Setting False causes _mp_send's while loop to exit on the next
-            # tick (≤50 ms), which triggers _mp_send's finally block that
-            # sends the WebSocket close frame before the thread finishes.
             self._mp_connected = False
+            # Kick the event loop out of any sleep immediately so _mp_send's
+            # finally block (which calls ws.close()) fires within milliseconds.
+            if loop and not loop.is_closed():
+                try:
+                    if ws:
+                        asyncio.run_coroutine_threadsafe(ws.close(), loop)
+                    else:
+                        loop.call_soon_threadsafe(lambda: None)
+                except Exception:
+                    pass
             if thread and thread.is_alive():
-                thread.join(timeout=2.0)
+                thread.join(timeout=3.0)
         ShowBase.userExit(self)

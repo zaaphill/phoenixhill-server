@@ -129,7 +129,12 @@ class MultiplayerMixin:
                 break
             wait = 0.5 if retry == 1 else min(2 ** (retry - 1), 30)
             print(f"[MP] reconnecting in {wait}s (attempt {retry})")
-            await asyncio.sleep(wait)
+            # Sleep in short chunks so _mp_connected=False is noticed quickly.
+            elapsed = 0.0
+            while elapsed < wait and self._mp_connected and self._mp_generation == gen:
+                chunk = min(0.1, wait - elapsed)
+                await asyncio.sleep(chunk)
+                elapsed += chunk
         # Only clear the flag if we're still the current session (don't kill a newer session)
         if self._mp_generation == gen:
             self._mp_connected = False
