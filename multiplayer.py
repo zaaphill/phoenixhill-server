@@ -104,6 +104,18 @@ class MultiplayerMixin:
             return
         ws_base = _cfg_mod.get()["ws"]
         uri = f"{ws_base}/ws/{build_id}?token={token}"
+
+        # Remove any stale server-side session BEFORE opening the new WebSocket.
+        # This prevents the eviction-broadcast race that causes the 1005 loop.
+        try:
+            import auth_client as _ac
+            print(f"[MP] pre-connect leave_room ...")
+            await asyncio.get_running_loop().run_in_executor(
+                None, _ac.leave_room, token, build_id)
+            print(f"[MP] pre-connect leave_room done")
+        except Exception as e:
+            print(f"[MP] pre-connect leave_room error: {e}")
+
         retry = 0
         while self._mp_connected and self._mp_generation == gen:
             print(f"[MP] connecting -> {uri}")
