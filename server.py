@@ -19,6 +19,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 
+@app.on_event("startup")
+async def _startup():
+    _init_db()
+
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def _db():
@@ -304,11 +309,10 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     if build_id not in _rooms:
         _rooms[build_id] = {}
 
-    # Remove any stale connection from the same user (e.g. closed without disconnecting).
-    stale = [pid for pid, d in _rooms[build_id].items() if d["username"] == username]
-    for pid in stale:
-        _rooms[build_id].pop(pid, None)
-
+    # Allow multiple connections per user (same account can open two instances).
+    # Dead connections from previous sessions are cleaned up naturally:
+    # _broadcast() removes any pid whose send_json() fails, then broadcasts left.
+    # The server's ws_ping_interval also evicts zombie WebSockets within ~40s.
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
@@ -335,7 +339,10 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         while True:
             msg = await websocket.receive_json()
             if msg.get("type") == "move":
-                _rooms[build_id][player_id].update({
+                entry = _rooms.get(build_id, {}).get(player_id)
+                if not entry:
+                    break  # player was evicted from room; exit cleanly
+                entry.update({
                     "x": msg.get("x", 0.0), "y": msg.get("y", 0.0),
                     "z": msg.get("z", 0.0), "h": msg.get("h", 0.0),
                 })
@@ -368,4 +375,5 @@ if __name__ == "__main__":
     _init_db()
     port = int(os.environ.get("PORT", 8000))
     print(f"PhoenixHill auth server  ->  http://0.0.0.0:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning",
+                ws_ping_interval=20, ws_ping_timeout=20)
