@@ -28,21 +28,43 @@ _MAX_CHAT   = 8      # chat lines shown
 class MultiplayerMixin:
 
     def start_multiplayer(self, build_id, token):
+        # Guard: stop existing session so the old asyncio thread can't clobber new state
+        if getattr(self, "_mp_connected", False):
+            print("[MP] stopping existing session before starting new one")
+            self.stop_multiplayer()
+
+        gen = getattr(self, "_mp_generation", 0) + 1
+        self._mp_generation     = gen
         self._remote_players    = {}
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
         self._ws                = None
         self._mp_loop           = asyncio.new_event_loop()
         self._chat_input_active = False
-        print(f"[MP] start_multiplayer build_id={build_id}")
+        print(f"[MP] start_multiplayer build_id={build_id} gen={gen}")
         threading.Thread(
             target=self._run_mp_loop,
-            args=(build_id, token),
+            args=(build_id, token, gen),
             daemon=True,
         ).start()
         self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
+        if not getattr(self, "_mp_atexit_registered", False):
+            import atexit
+            atexit.register(self._mp_atexit)
+            self._mp_atexit_registered = True
         self._setup_chat_ui()
         self.accept("/", self._open_chat_input)
+
+    def _mp_atexit(self):
+        ws   = getattr(self, "_ws",      None)
+        loop = getattr(self, "_mp_loop", None)
+        if ws and loop and not loop.is_closed() and getattr(self, "_mp_connected", False):
+            self._mp_connected = False
+            future = asyncio.run_coroutine_threadsafe(ws.close(), loop)
+            try:
+                future.result(timeout=0.5)
+            except Exception:
+                pass
 
     def stop_multiplayer(self):
         if not getattr(self, "_mp_connected", False):
@@ -57,18 +79,19 @@ class MultiplayerMixin:
             self._remove_remote_player(pid)
         self._remote_players = {}
         self._teardown_chat_ui()
+        self._teardown_player_count_label()
         self.ignore("/")
 
     # ── Background asyncio thread ──────────────────────────────────────────
 
-    def _run_mp_loop(self, build_id, token):
+    def _run_mp_loop(self, build_id, token, gen):
         asyncio.set_event_loop(self._mp_loop)
         try:
-            self._mp_loop.run_until_complete(self._mp_main(build_id, token))
+            self._mp_loop.run_until_complete(self._mp_main(build_id, token, gen))
         finally:
             self._mp_loop.close()
 
-    async def _mp_main(self, build_id, token):
+    async def _mp_main(self, build_id, token, gen):
         try:
             import websockets as ws_lib
         except ImportError:
@@ -76,26 +99,44 @@ class MultiplayerMixin:
             return
         ws_base = _cfg_mod.get()["ws"]
         uri = f"{ws_base}/ws/{build_id}?token={token}"
-        print(f"[MP] connecting -> {uri}")
-        try:
-            async with ws_lib.connect(uri) as ws:
-                self._ws = ws
-                print("[MP] WebSocket connected OK")
-                self._mp_queue.put_nowait({"type": "_connected"})
-                await asyncio.gather(
-                    self._mp_recv(ws),
-                    self._mp_send(ws),
-                )
-        except Exception as e:
-            print(f"[MP] connection error: {e}")
-            self._mp_queue.put_nowait({"type": "_error", "msg": str(e)})
-        finally:
-            self._ws = None
+        retry = 0
+        while self._mp_connected and self._mp_generation == gen:
+            print(f"[MP] connecting -> {uri}")
+            try:
+                async with ws_lib.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+                    self._ws = ws
+                    print("[MP] WebSocket connected OK")
+                    retry = 0
+                    self._mp_queue.put_nowait({"type": "_connected"})
+                    await asyncio.gather(
+                        self._mp_recv(ws),
+                        self._mp_send(ws),
+                    )
+            except Exception as e:
+                print(f"[MP] connection error: {e}")
+                if not self._mp_connected or self._mp_generation != gen:
+                    break
+                self._mp_queue.put_nowait({"type": "_reconnecting"})
+            finally:
+                self._ws = None
+            if not self._mp_connected or self._mp_generation != gen:
+                break
+            retry += 1
+            if retry > 8:
+                self._mp_queue.put_nowait({"type": "_error", "msg": "Could not reconnect to server"})
+                break
+            wait = 0.5 if retry == 1 else min(2 ** (retry - 1), 30)
+            print(f"[MP] reconnecting in {wait}s (attempt {retry})")
+            await asyncio.sleep(wait)
+        # Only clear the flag if we're still the current session (don't kill a newer session)
+        if self._mp_generation == gen:
             self._mp_connected = False
 
     async def _mp_recv(self, ws):
+        received_any = False
         try:
             async for raw in ws:
+                received_any = True
                 try:
                     msg = json.loads(raw)
                     if msg.get("type") not in ("move",):
@@ -105,6 +146,11 @@ class MultiplayerMixin:
                     print(f"[MP] recv parse error: {e}")
         except Exception as e:
             print(f"[MP] recv loop ended: {e}")
+            if not received_any:
+                self._mp_queue.put_nowait({
+                    "type": "_error",
+                    "msg": "Server rejected connection — try logging out and back in",
+                })
 
     async def _mp_send(self, ws):
         while self._mp_connected:
@@ -193,22 +239,34 @@ class MultiplayerMixin:
         t = msg.get("type")
         if t == "_connected":
             self._show_toast("Multiplayer connected", (0.40, 0.88, 0.52, 1))
+            self._update_player_count_label()
+            return
+        if t == "_reconnecting":
+            self._show_toast("Connection lost, reconnecting...", (1.0, 0.85, 0.30, 1), duration=3.0)
+            for pid in list(self._remote_players.keys()):
+                self._remove_remote_player(pid)
+            self._remote_players = {}
+            self._update_player_count_label()
             return
         if t == "_error":
-            self._show_toast(f"MP error: {msg.get('msg', '')}"[:60],
-                             (1.0, 0.40, 0.40, 1))
+            err_text = msg.get('msg', '')
+            print(f"[MP] ERROR: {err_text}")
+            self._show_toast(f"MP: {err_text}"[:60], (1.0, 0.40, 0.40, 1), duration=6.0)
             return
         if t == "state":
             print(f"[MP] state: {len(msg.get('players', {}))} other players")
             for pid, d in msg.get("players", {}).items():
                 self._add_remote_player(pid, d.get("username", pid))
                 self._update_remote_player(pid, d)
+            self._update_player_count_label()
         elif t == "joined":
             print(f"[MP] joined: {msg['player_id']} ({msg.get('username')})")
             self._add_remote_player(msg["player_id"], msg.get("username", ""))
+            self._update_player_count_label()
         elif t == "left":
             print(f"[MP] left: {msg['player_id']}")
             self._remove_remote_player(msg["player_id"])
+            self._update_player_count_label()
         elif t == "move":
             pid = msg.get("player_id")
             if pid:
@@ -318,6 +376,43 @@ class MultiplayerMixin:
                 d["label"].setPos(x, y, z + 5.8)
             except Exception:
                 pass
+
+    # ── Player count label ────────────────────────────────────────────────
+
+    def _update_player_count_label(self):
+        count = len(getattr(self, "_remote_players", {}))
+        if count == 0:
+            text = "Waiting for players...  (stay here — they will appear when they join)"
+            color = (1.0, 0.85, 0.30, 1.0)
+        else:
+            text = f"{count} player{'s' if count != 1 else ''} connected"
+            color = (0.45, 0.95, 0.55, 1.0)
+        lbl = getattr(self, "_mp_count_lbl", None)
+        if lbl is None:
+            self._mp_count_lbl = DirectLabel(
+                text=text,
+                text_fg=color, text_scale=0.034,
+                frameColor=(0.06, 0.07, 0.10, 0.80),
+                frameSize=(-0.68, 0.68, -0.028, 0.028),
+                parent=base.a2dTopCenter,
+                pos=(0, 0, -0.10),
+                sortOrder=60,
+            )
+        else:
+            try:
+                lbl["text"]    = text
+                lbl["text_fg"] = color
+            except Exception:
+                pass
+
+    def _teardown_player_count_label(self):
+        lbl = getattr(self, "_mp_count_lbl", None)
+        if lbl:
+            try:
+                lbl.destroy()
+            except Exception:
+                pass
+        self._mp_count_lbl = None
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
