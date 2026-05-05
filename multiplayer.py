@@ -290,6 +290,10 @@ class MultiplayerMixin:
     def _add_remote_player(self, pid, username):
         if pid in self._remote_players:
             return
+        # Ignore ghost entries for our own account (zombie from a previous session
+        # that hasn't been evicted by the server's ping timeout yet).
+        if username and username == getattr(self, "_session_username", None):
+            return
         r, g, b, a = _COLORS[len(self._remote_players) % len(_COLORS)]
         skin  = (r * 0.95, g * 0.85, b * 0.55, a)
         leg_c = (r * 0.60, g * 0.75, b * 0.35, a)

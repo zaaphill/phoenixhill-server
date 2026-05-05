@@ -309,18 +309,10 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     if build_id not in _rooms:
         _rooms[build_id] = {}
 
-    # Remove same-user stale entries from _rooms so they don't appear as ghost
-    # avatars in the new connection's state snapshot.  We deliberately do NOT
-    # close the stale WebSockets: sending a close frame would kick any other
-    # live client sharing this account (e.g. VS Code + packaged EXE running
-    # simultaneously) and create an infinite reconnect loop.  Zombies are
-    # evicted naturally: if the zombie is still sending moves the move handler
-    # will see it's no longer in _rooms and break; truly dead connections are
-    # cleaned up by the server's ping timeout (~40 s).
-    for pid, d in list(_rooms[build_id].items()):
-        if d["username"] == username:
-            _rooms[build_id].pop(pid, None)
-
+    # Allow multiple connections per user (same account can open two instances).
+    # Dead connections from previous sessions are cleaned up naturally:
+    # _broadcast() removes any pid whose send_json() fails, then broadcasts left.
+    # The server's ws_ping_interval also evicts zombie WebSockets within ~40s.
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
