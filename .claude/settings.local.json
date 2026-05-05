@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import zipfile; z=zipfile.ZipFile\\('Poliigon_GrassPatchyGround_4585.zip'\\); print\\('\\\\n'.join\\(z.namelist\\(\\)\\)\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+# Sensitive / local-only files — never upload these
+accounts.db
+.session
+.server_starting
+server_log.txt
+server.pid
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Build output
+build/
+dist/
+
+# Large assets not needed for server
+textures/
+*.exr
+*.jpg
+*.png
+*.cur
+*.zip
+Poliigon_GrassPatchyGround_4585.zip
