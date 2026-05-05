@@ -42,11 +42,13 @@ class MultiplayerMixin:
         self._mp_loop           = asyncio.new_event_loop()
         self._chat_input_active = False
         print(f"[MP] start_multiplayer build_id={build_id} gen={gen}")
-        threading.Thread(
+        t = threading.Thread(
             target=self._run_mp_loop,
             args=(build_id, token, gen),
             daemon=True,
-        ).start()
+        )
+        t.start()
+        self._mp_thread = t
         self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
         if not getattr(self, "_mp_atexit_registered", False):
             import atexit
@@ -269,9 +271,7 @@ class MultiplayerMixin:
             self._update_player_count_label()
         elif t == "move":
             pid = msg.get("player_id")
-            if pid:
-                if pid not in self._remote_players:
-                    self._add_remote_player(pid, pid)
+            if pid and pid in self._remote_players:
                 self._update_remote_player(pid, msg)
         elif t == "chat":
             self._add_chat_message(msg.get("username", "?"), msg.get("text", ""))
