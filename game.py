@@ -196,10 +196,12 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
             self._mp_connected = False
             token    = getattr(self, "_session_token", None)
             build_id = getattr(self, "_mp_build_id",   None)
+            print(f"[EXIT] leaving room {build_id} token={'set' if token else 'MISSING'}", flush=True)
             if token and build_id:
                 try:
                     import auth_client
-                    auth_client.leave_room(token, build_id)
-                except Exception:
-                    pass
+                    result, err = auth_client.leave_room(token, build_id)
+                    print(f"[EXIT] leave_room -> {result} err={err}", flush=True)
+                except Exception as e:
+                    print(f"[EXIT] leave_room exception: {e}", flush=True)
         ShowBase.userExit(self)
