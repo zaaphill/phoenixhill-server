@@ -329,13 +329,10 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     if build_id not in _rooms:
         _rooms[build_id] = {}
 
-    # Evict stale connections from the same user (ghosts from previous sessions).
-    # We only evict entries that haven't sent a move in >5 s — live connections
-    # send moves every 50 ms, so a live session is never touched.
-    now = time.time()
+    # Evict any previous connection for this user — you can only be in a room once.
     stale_pids = [
         pid for pid, d in list(_rooms[build_id].items())
-        if d["username"] == username and now - d.get("last_move", 0) > 5
+        if d["username"] == username
     ]
     for spid in stale_pids:
         old = _rooms[build_id].pop(spid, None)

@@ -58,19 +58,14 @@ class MultiplayerMixin:
         self.accept("/", self._open_chat_input)
 
     def _mp_atexit(self):
-        import socket as _sock
-        ws = getattr(self, "_ws", None)
-        if getattr(self, "_mp_connected", False) and ws:
+        ws   = getattr(self, "_ws",      None)
+        loop = getattr(self, "_mp_loop", None)
+        if getattr(self, "_mp_connected", False) and ws and loop and not loop.is_closed():
             self._mp_connected = False
             try:
-                raw = ws.transport.get_extra_info('socket')
-                if raw:
-                    raw.shutdown(_sock.SHUT_RDWR)
+                asyncio.run_coroutine_threadsafe(ws.close(), loop).result(timeout=2.0)
             except Exception:
-                try:
-                    ws.transport.close()
-                except Exception:
-                    pass
+                pass
 
     def stop_multiplayer(self):
         if not getattr(self, "_mp_connected", False):
