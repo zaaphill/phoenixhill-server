@@ -799,7 +799,9 @@ class LoginScreenMixin:
         )
 
     def _populate_browse_list(self, builds, err, task):
-        frame = self._browse_list_frame
+        frame = getattr(self, "_browse_list_frame", None)
+        if not frame or frame.isEmpty():
+            return task.done  # browse screen was navigated away from before fetch finished
         for child in frame.getChildren():
             child.removeNode()
 
