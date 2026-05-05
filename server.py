@@ -3,7 +3,7 @@ PhoenixHill auth server
 Run with:  python server.py
 Requires:  pip install fastapi uvicorn
 """
-import hashlib, os, secrets, sqlite3, time, uuid
+import asyncio, hashlib, os, secrets, sqlite3, time, uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +22,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 @app.on_event("startup")
 async def _startup():
     _init_db()
+    asyncio.create_task(_stale_cleanup_task())
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -281,6 +282,25 @@ def get_published_build(build_id: int):
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────
 
+async def _stale_cleanup_task():
+    """Every 30 s, evict connections that haven't sent a move in 60 s."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        for build_id, players in list(_rooms.items()):
+            for pid, pdata in list(players.items()):
+                if now - pdata.get("last_move", now) > 60:
+                    players.pop(pid, None)
+                    print(f"[WS] stale evict {pdata['username']} from room {build_id}", flush=True)
+                    await _broadcast(build_id, {"type": "left", "player_id": pid})
+                    try:
+                        await pdata["ws"].close()
+                    except Exception:
+                        pass
+            if build_id in _rooms and not _rooms[build_id]:
+                del _rooms[build_id]
+
+
 async def _broadcast(build_id: int, msg: dict, exclude: str = None):
     dead = []
     for pid, pdata in list(_rooms.get(build_id, {}).items()):
@@ -309,13 +329,28 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     if build_id not in _rooms:
         _rooms[build_id] = {}
 
-    # Allow multiple connections per user (same account can open two instances).
-    # Dead connections from previous sessions are cleaned up naturally:
-    # _broadcast() removes any pid whose send_json() fails, then broadcasts left.
-    # The server's ws_ping_interval also evicts zombie WebSockets within ~40s.
+    # Evict stale connections from the same user (ghosts from previous sessions).
+    # We only evict entries that haven't sent a move in >5 s — live connections
+    # send moves every 50 ms, so a live session is never touched.
+    now = time.time()
+    stale_pids = [
+        pid for pid, d in list(_rooms[build_id].items())
+        if d["username"] == username and now - d.get("last_move", 0) > 5
+    ]
+    for spid in stale_pids:
+        old = _rooms[build_id].pop(spid, None)
+        print(f"[WS] evicting stale {username} ({spid}) from room {build_id}", flush=True)
+        await _broadcast(build_id, {"type": "left", "player_id": spid})
+        if old:
+            try:
+                await old["ws"].close()
+            except Exception:
+                pass
+
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
+        "last_move": time.time(),
     }
 
     already_in_room = [d["username"] for pid, d in _rooms[build_id].items() if pid != player_id]
@@ -328,7 +363,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
 
     # Send current room state to the newcomer.
     others = {
-        pid: {k: v for k, v in d.items() if k != "ws"}
+        pid: {k: v for k, v in d.items() if k not in ("ws", "last_move")}
         for pid, d in _rooms[build_id].items()
         if pid != player_id
     }
@@ -345,6 +380,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                 entry.update({
                     "x": msg.get("x", 0.0), "y": msg.get("y", 0.0),
                     "z": msg.get("z", 0.0), "h": msg.get("h", 0.0),
+                    "last_move": time.time(),
                 })
                 await _broadcast(build_id, {
                     "type": "move", "player_id": player_id,
