@@ -324,37 +324,37 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     player_id = str(uuid.uuid4())
     username  = sess["username"]
 
+    # Evict stale same-username connections.
+    # We are NOT in _rooms yet, so no other player's broadcast can write to our
+    # socket concurrently during the yields inside this loop.
     if build_id not in _rooms:
         _rooms[build_id] = {}
-
-    # Kick any existing connection for this username — one session per user per room.
     stale = [pid for pid, d in list(_rooms[build_id].items()) if d["username"] == username]
     for spid in stale:
         _rooms[build_id].pop(spid, None)
         print(f"[WS] kicked old session for {username} ({spid})", flush=True)
         await _broadcast(build_id, {"type": "left", "player_id": spid})
 
-    # Use setdefault in case a zombie coroutine's finally deleted the room dict
-    # between the eviction broadcast (where we yield) and here.
+    # Snapshot the room and send state BEFORE adding ourselves to _rooms.
+    # While absent from _rooms, no broadcast can target our socket, so the
+    # state send has exactly one writer — us.  Adding first then sending is
+    # the classic concurrent-write bug: another player's 20 Hz move broadcast
+    # yields into our state send and corrupts the frame → 1005.
+    others = {
+        pid: {k: v for k, v in d.items() if k != "ws"}
+        for pid, d in _rooms.get(build_id, {}).items()
+    }
+    print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]}", flush=True)
+    await websocket.send_json({"type": "state", "players": others})
+
+    # Now enter the room and announce — from this point others will write to us.
     _rooms.setdefault(build_id, {})[player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
     }
-
-    already_in_room = [d["username"] for pid, d in _rooms[build_id].items() if pid != player_id]
-    print(f"[WS] {username} joined room {build_id}. Others: {already_in_room}", flush=True)
-
     await _broadcast(build_id, {
         "type": "joined", "player_id": player_id, "username": username,
     }, exclude=player_id)
-
-    others = {
-        pid: {k: v for k, v in d.items() if k != "ws"}
-        for pid, d in _rooms[build_id].items()
-        if pid != player_id
-    }
-    print(f"[WS] sending state to {username}: {[d['username'] for d in others.values()]}", flush=True)
-    await websocket.send_json({"type": "state", "players": others})
 
     try:
         while True:
