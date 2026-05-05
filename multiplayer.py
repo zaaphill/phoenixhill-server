@@ -155,22 +155,30 @@ class MultiplayerMixin:
                 })
 
     async def _mp_send(self, ws):
-        while self._mp_connected:
+        try:
+            while self._mp_connected:
+                try:
+                    char = getattr(self, "character", None)
+                    if char:
+                        pos = char.getPos()
+                        await ws.send(json.dumps({
+                            "type": "move",
+                            "x": round(float(pos.x), 2),
+                            "y": round(float(pos.y), 2),
+                            "z": round(float(pos.z), 2),
+                            "h": round(float(char.getH()), 1),
+                        }))
+                except Exception as e:
+                    print(f"[MP] send error: {e}")
+                    break
+                await asyncio.sleep(0.05)   # 20 Hz
+        finally:
+            # Always send a clean close frame when the send loop exits,
+            # whether from _mp_connected=False (window close / menu) or a send error.
             try:
-                char = getattr(self, "character", None)
-                if char:
-                    pos = char.getPos()
-                    await ws.send(json.dumps({
-                        "type": "move",
-                        "x": round(float(pos.x), 2),
-                        "y": round(float(pos.y), 2),
-                        "z": round(float(pos.z), 2),
-                        "h": round(float(char.getH()), 1),
-                    }))
-            except Exception as e:
-                print(f"[MP] send error: {e}")
-                break
-            await asyncio.sleep(0.05)   # 20 Hz
+                await ws.close()
+            except Exception:
+                pass
 
     # ── Panda3D main-thread task ───────────────────────────────────────────
 

@@ -278,7 +278,7 @@ class LoginScreenMixin:
     def _on_auto_login_ok(self, token, username, task):
         self._session_token    = token
         self._session_username = username
-        self._auto_join_server()
+        self._build_main_menu()
         return task.done
 
     def _show_login_task(self, task):
@@ -431,7 +431,7 @@ class LoginScreenMixin:
         if self._login_ui:
             self._login_ui.destroy()
             self._login_ui = None
-        self._auto_join_server()
+        self._build_main_menu()
         return task.done
 
     def _on_login_fail(self, msg, task):
@@ -481,10 +481,11 @@ class LoginScreenMixin:
             b["online"] = rooms.get(str(b["id"]), 0)
         # Prefer server with most players; fall back to most recent
         builds.sort(key=lambda b: (b["online"], b["updated_at"]), reverse=True)
-        if not builds:
+        active = [b for b in builds if b.get("online", 0) > 0]
+        if not active:
             self.taskMgr.doMethodLater(0, self._no_server_found, "_noServer", appendTask=True)
             return
-        best = builds[0]
+        best = active[0]
         load_result, err = auth_client.get_published_build(best["id"])
         if load_result and load_result.get("ok"):
             self.taskMgr.doMethodLater(
@@ -496,9 +497,10 @@ class LoginScreenMixin:
             self.taskMgr.doMethodLater(0, self._no_server_found, "_noServer", appendTask=True)
 
     def _do_auto_join(self, build_id, name, data_str, task):
-        if hasattr(self, "_join_splash") and self._join_splash:
-            self._join_splash.destroy()
-            self._join_splash = None
+        if not getattr(self, "_join_splash", None):
+            return task.done  # user cancelled or navigated away before the thread finished
+        self._join_splash.destroy()
+        self._join_splash = None
         self._enter_play_mode(build_id, name, data_str)
         return task.done
 
@@ -774,6 +776,14 @@ class LoginScreenMixin:
         )
 
         threading.Thread(target=self._fetch_browse_thread, daemon=True).start()
+        self.taskMgr.doMethodLater(6, self._browse_auto_refresh, "_browseAutoRefresh",
+                                   appendTask=True)
+
+    def _browse_auto_refresh(self, task):
+        if not getattr(self, "_main_menu_ui", None):
+            return task.done  # screen was navigated away from
+        threading.Thread(target=self._fetch_browse_thread, daemon=True).start()
+        return task.again
 
     def _fetch_browse_thread(self):
         result, err = auth_client.browse_published()
@@ -907,6 +917,7 @@ class LoginScreenMixin:
         self.stop_multiplayer()
         self.character.hide()
         self.is_playtest   = False
+        self._clear_all_bricks()
         self._is_play_only = False
         dlg = getattr(self, "_save_dialog", None)
         if dlg:
@@ -925,13 +936,14 @@ class LoginScreenMixin:
         self._cloud_build_id   = None
         self._cloud_build_name = None
         self._clear_all_bricks()
+        self.create_baseplate()
         self._show_studio_ui()
         self.is_playtest = False
         if hasattr(self, "exit_button"):
             self.exit_button["text"] = "Play"
         if hasattr(self, "_panel"):
             self._panel.show()
-        for attr in ("insert_brick_button", "move_button", "scale_button",
+        for attr in ("exit_button", "insert_brick_button", "move_button", "scale_button",
                      "export_button", "import_button", "cloud_save_button"):
             btn = getattr(self, attr, None)
             if btn:
