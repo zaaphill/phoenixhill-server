@@ -3,7 +3,7 @@ PhoenixHill auth server
 Run with:  python server.py
 Requires:  pip install fastapi uvicorn
 """
-import hashlib, os, secrets, sqlite3, time, uuid
+import hashlib, os, secrets, sqlite3, time, traceback, uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -345,7 +345,13 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         for pid, d in _rooms.get(build_id, {}).items()
     }
     print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]}", flush=True)
-    await websocket.send_json({"type": "state", "players": others})
+    try:
+        await websocket.send_json({"type": "state", "players": others})
+        print(f"[WS] {username}: state sent OK", flush=True)
+    except Exception as _e:
+        print(f"[WS] {username}: state send FAILED: {_e}", flush=True)
+        traceback.print_exc()
+        return
 
     # Now enter the room and announce — from this point others will write to us.
     _rooms.setdefault(build_id, {})[player_id] = {
@@ -380,8 +386,10 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     "username": username,
                     "text": text,
                 }, exclude=player_id)
-    except (WebSocketDisconnect, Exception):
+    except WebSocketDisconnect:
         pass
+    except Exception as _e:
+        print(f"[WS] {username}: recv loop error: {_e}", flush=True)
     finally:
         # Check BEFORE popping — if already absent, we were evicted and our
         # "left" was already broadcast by the eviction code.  Skipping the
