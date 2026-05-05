@@ -35,6 +35,7 @@ class MultiplayerMixin:
 
         gen = getattr(self, "_mp_generation", 0) + 1
         self._mp_generation     = gen
+        self._mp_build_id       = build_id
         self._remote_players    = {}
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
@@ -58,12 +59,15 @@ class MultiplayerMixin:
         self.accept("/", self._open_chat_input)
 
     def _mp_atexit(self):
-        ws   = getattr(self, "_ws",      None)
-        loop = getattr(self, "_mp_loop", None)
-        if getattr(self, "_mp_connected", False) and ws and loop and not loop.is_closed():
-            self._mp_connected = False
+        if not getattr(self, "_mp_connected", False):
+            return
+        self._mp_connected = False
+        token    = getattr(self, "_session_token", None)
+        build_id = getattr(self, "_mp_build_id",   None)
+        if token and build_id:
             try:
-                asyncio.run_coroutine_threadsafe(ws.close(), loop).result(timeout=2.0)
+                import auth_client
+                auth_client.leave_room(token, build_id)
             except Exception:
                 pass
 

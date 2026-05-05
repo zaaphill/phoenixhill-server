@@ -266,6 +266,24 @@ def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
 
 
+@app.post("/api/rooms/{build_id}/leave")
+async def leave_room(build_id: int, token: str):
+    try:
+        sess = _get_session(token)
+    except HTTPException:
+        return {"ok": False}
+    username = sess["username"]
+    room = _rooms.get(build_id, {})
+    gone = [pid for pid, d in list(room.items()) if d["username"] == username]
+    for pid in gone:
+        room.pop(pid, None)
+        print(f"[WS] HTTP leave: {username} removed from room {build_id}", flush=True)
+        await _broadcast(build_id, {"type": "left", "player_id": pid})
+    if build_id in _rooms and not _rooms[build_id]:
+        del _rooms[build_id]
+    return {"ok": True}
+
+
 @app.get("/api/published/{build_id}")
 def get_published_build(build_id: int):
     c = _db()

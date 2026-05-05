@@ -192,13 +192,14 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
     def userExit(self):
         """Called when the window X button is clicked."""
-        import asyncio as _asyncio
-        ws   = getattr(self, "_ws",      None)
-        loop = getattr(self, "_mp_loop", None)
-        if getattr(self, "_mp_connected", False) and ws and loop and not loop.is_closed():
+        if getattr(self, "_mp_connected", False):
             self._mp_connected = False
-            try:
-                _asyncio.run_coroutine_threadsafe(ws.close(), loop).result(timeout=2.0)
-            except Exception:
-                pass
+            token    = getattr(self, "_session_token", None)
+            build_id = getattr(self, "_mp_build_id",   None)
+            if token and build_id:
+                try:
+                    import auth_client
+                    auth_client.leave_room(token, build_id)
+                except Exception:
+                    pass
         ShowBase.userExit(self)

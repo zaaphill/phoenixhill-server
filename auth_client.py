@@ -71,3 +71,6 @@ def get_published_build(build_id):
 
 def get_rooms():
     return _request("GET", "/api/rooms")
+
+def leave_room(token, build_id):
+    return _request("POST", f"/api/rooms/{build_id}/leave", params={"token": token})
