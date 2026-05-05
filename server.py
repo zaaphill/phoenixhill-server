@@ -381,11 +381,17 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     except (WebSocketDisconnect, Exception):
         pass
     finally:
+        # Check BEFORE popping — if already absent, we were evicted and our
+        # "left" was already broadcast by the eviction code.  Skipping the
+        # broadcast here prevents a concurrent write to a new connection's
+        # WebSocket (which causes the 1005 reconnect loop).
+        was_present = player_id in _rooms.get(build_id, {})
         _rooms.get(build_id, {}).pop(player_id, None)
         if build_id in _rooms and not _rooms[build_id]:
             del _rooms[build_id]
         print(f"[WS] {username} left room {build_id}", flush=True)
-        await _broadcast(build_id, {"type": "left", "player_id": player_id})
+        if was_present:
+            await _broadcast(build_id, {"type": "left", "player_id": player_id})
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
