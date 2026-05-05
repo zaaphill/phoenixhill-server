@@ -303,6 +303,12 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
 
     if build_id not in _rooms:
         _rooms[build_id] = {}
+
+    # Remove any stale connection from the same user (e.g. closed without disconnecting).
+    stale = [pid for pid, d in _rooms[build_id].items() if d["username"] == username]
+    for pid in stale:
+        _rooms[build_id].pop(pid, None)
+
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,

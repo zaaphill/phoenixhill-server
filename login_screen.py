@@ -924,6 +924,7 @@ class LoginScreenMixin:
             self._main_menu_ui = None
         self._cloud_build_id   = None
         self._cloud_build_name = None
+        self._clear_all_bricks()
         self._show_studio_ui()
         self.is_playtest = False
         if hasattr(self, "exit_button"):
