@@ -192,22 +192,23 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
     def userExit(self):
         """Called when the window X button is clicked."""
-        import asyncio
-        thread = getattr(self, "_mp_thread", None)
-        loop   = getattr(self, "_mp_loop",   None)
-        ws     = getattr(self, "_ws",        None)
+        import socket as _sock
+        ws = getattr(self, "_ws", None)
         if getattr(self, "_mp_connected", False):
             self._mp_connected = False
-            # Kick the event loop out of any sleep immediately so _mp_send's
-            # finally block (which calls ws.close()) fires within milliseconds.
-            if loop and not loop.is_closed():
+            if ws:
+                # Close the raw TCP socket directly from the main thread.
+                # Python kills daemon threads without running finally blocks,
+                # so asyncio-based close is unreliable here. A raw shutdown
+                # sends TCP FIN immediately; the server's receive_json() raises
+                # and its finally block removes the player and broadcasts "left".
                 try:
-                    if ws:
-                        asyncio.run_coroutine_threadsafe(ws.close(), loop)
-                    else:
-                        loop.call_soon_threadsafe(lambda: None)
+                    raw = ws.transport.get_extra_info('socket')
+                    if raw:
+                        raw.shutdown(_sock.SHUT_RDWR)
                 except Exception:
-                    pass
-            if thread and thread.is_alive():
-                thread.join(timeout=3.0)
+                    try:
+                        ws.transport.close()
+                    except Exception:
+                        pass
         ShowBase.userExit(self)
