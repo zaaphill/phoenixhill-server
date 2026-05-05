@@ -309,29 +309,22 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     if build_id not in _rooms:
         _rooms[build_id] = {}
 
-    # Remove stale connections for the same user from the room dict first.
-    stale_to_close = []
+    # Remove same-user stale entries from _rooms so they don't appear as ghost
+    # avatars in the new connection's state snapshot.  We deliberately do NOT
+    # close the stale WebSockets: sending a close frame would kick any other
+    # live client sharing this account (e.g. VS Code + packaged EXE running
+    # simultaneously) and create an infinite reconnect loop.  Zombies are
+    # evicted naturally: if the zombie is still sending moves the move handler
+    # will see it's no longer in _rooms and break; truly dead connections are
+    # cleaned up by the server's ping timeout (~40 s).
     for pid, d in list(_rooms[build_id].items()):
         if d["username"] == username:
             _rooms[build_id].pop(pid, None)
-            stale_to_close.append(d)
 
-    # Add new player BEFORE awaiting any stale WebSocket close.
-    # If we close first, asyncio may yield to the stale ws_endpoint's finally block,
-    # which sees an empty room and deletes it — then this line would KeyError.
     _rooms[build_id][player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
     }
-
-    # Now close stale WebSockets. Their finally blocks see the new player in the room
-    # and won't delete it. The resulting "left" broadcast is harmless — the new player
-    # hasn't received state yet so won't have a ghost avatar to remove.
-    for d in stale_to_close:
-        try:
-            await d["ws"].close(code=1000, reason="Replaced by new connection")
-        except Exception:
-            pass
 
     already_in_room = [d["username"] for pid, d in _rooms[build_id].items() if pid != player_id]
     print(f"[WS] {username} joined room {build_id}. Others already here: {already_in_room}", flush=True)
