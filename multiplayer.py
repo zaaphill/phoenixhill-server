@@ -75,6 +75,14 @@ class MultiplayerMixin:
         if not getattr(self, "_mp_connected", False):
             return
         self._mp_connected = False
+        token    = getattr(self, "_session_token", None)
+        build_id = getattr(self, "_mp_build_id",   None)
+        if token and build_id:
+            try:
+                import auth_client as _ac
+                _ac.leave_room(token, build_id)
+            except Exception:
+                pass
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
         if ws and loop and not loop.is_closed():
