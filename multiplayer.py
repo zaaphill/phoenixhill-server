@@ -157,6 +157,7 @@ class MultiplayerMixin:
                     })
 
     async def _mp_send(self, ws):
+        send_count = 0
         try:
             while self._mp_connected:
                 try:
@@ -170,6 +171,12 @@ class MultiplayerMixin:
                             "z": round(float(pos.z), 2),
                             "h": round(float(char.getH()), 1),
                         }))
+                        send_count += 1
+                        # Every ~10 s (200 msgs × 50 ms) log that we're still sending.
+                        # This is also why the server's 35 s inactivity timer never fires
+                        # for a running client — each send resets it.
+                        if send_count % 200 == 0:
+                            print(f"[MP] send heartbeat: {send_count} moves sent — server 35s timer keeps resetting", flush=True)
                 except Exception as e:
                     print(f"[MP] send error: {e}")
                     break

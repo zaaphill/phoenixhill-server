@@ -864,6 +864,9 @@ class LoginScreenMixin:
         return task.done
 
     def _on_play_published(self, build_id):
+        if getattr(self, "_entering_play_mode", False):
+            return
+        self._entering_play_mode = True
         def worker():
             result, err = auth_client.get_published_build(build_id)
             if result and result.get("ok"):
@@ -874,6 +877,7 @@ class LoginScreenMixin:
                 )
             else:
                 print("Failed to load published build:", err)
+                self._entering_play_mode = False
         threading.Thread(target=worker, daemon=True).start()
 
     def _do_enter_play_mode(self, build_id, name, data_str, task):
@@ -923,6 +927,7 @@ class LoginScreenMixin:
             except Exception:
                 pass
             self._disconnect_popup = None
+        self._entering_play_mode = False
         self.stop_multiplayer()
         self.character.hide()
         self.is_playtest   = False
