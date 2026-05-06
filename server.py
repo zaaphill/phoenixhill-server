@@ -351,18 +351,26 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         "type": "joined", "player_id": player_id, "username": username,
     }, exclude=player_id)
 
+    last_msg_time = time.time()
+    msg_count = 0
     try:
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.receive_json(), timeout=35.0)
             except asyncio.TimeoutError:
-                print(f"[WS] {username}: inactive 35s, kicking (room {build_id})", flush=True)
+                idle = time.time() - last_msg_time
+                print(f"[WS] {username}: TIMEOUT — no message for {idle:.1f}s, kicking (room {build_id})", flush=True)
                 try:
                     await websocket.send_json({"type": "kicked", "reason": "inactivity"})
                     await websocket.close(code=4008)
                 except Exception:
                     pass
                 break
+            last_msg_time = time.time()
+            msg_count += 1
+            # Log a heartbeat every ~10 s (200 messages at 20 Hz) so the logs show the timer resetting
+            if msg_count % 200 == 0:
+                print(f"[WS] {username}: active — {msg_count} msgs, last msg 0s ago (room {build_id})", flush=True)
             if msg.get("type") == "move":
                 entry = _rooms.get(build_id, {}).get(player_id)
                 if not entry:
@@ -384,10 +392,11 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     "username": username,
                     "text": text,
                 }, exclude=player_id)
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as _wd:
+        code = getattr(_wd, "code", "?")
+        print(f"[WS] {username}: clean disconnect (code={code}, room {build_id})", flush=True)
     except Exception as _e:
-        print(f"[WS] {username}: recv loop error: {_e}", flush=True)
+        print(f"[WS] {username}: recv loop error: {_e} (room {build_id})", flush=True)
     finally:
         # Check BEFORE popping — if already absent, we were evicted and our
         # "left" was already broadcast by the eviction code.  Skipping the
@@ -397,7 +406,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         _rooms.get(build_id, {}).pop(player_id, None)
         if build_id in _rooms and not _rooms[build_id]:
             del _rooms[build_id]
-        print(f"[WS] {username} left room {build_id}", flush=True)
+        print(f"[WS] {username} left room {build_id} (was_present={was_present})", flush=True)
         if was_present:
             await _broadcast(build_id, {"type": "left", "player_id": player_id})
 
