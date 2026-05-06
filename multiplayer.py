@@ -159,7 +159,8 @@ class MultiplayerMixin:
 
     async def _mp_send(self, ws):
         last_pos = None
-        last_send = time.monotonic()
+        last_sent = time.monotonic()
+        last_idle_log = 0
         try:
             while self._mp_connected:
                 try:
@@ -169,18 +170,19 @@ class MultiplayerMixin:
                         h   = char.getH()
                         cur = (round(float(pos.x), 2), round(float(pos.y), 2),
                                round(float(pos.z), 2), round(float(h), 1))
-                        now = time.monotonic()
-                        moved     = cur != last_pos
-                        keep_alive = (now - last_send) >= 25.0
-                        if moved or keep_alive:
+                        if cur != last_pos:
                             await ws.send(json.dumps({
                                 "type": "move",
                                 "x": cur[0], "y": cur[1], "z": cur[2], "h": cur[3],
                             }))
-                            if keep_alive and not moved:
-                                print(f"[MP] send: keep-alive (still for {now - last_send:.0f}s) — 35s timer reset", flush=True)
-                            last_pos  = cur
-                            last_send = now
+                            last_pos      = cur
+                            last_sent     = time.monotonic()
+                            last_idle_log = 0
+                        else:
+                            idle = time.monotonic() - last_sent
+                            if idle - last_idle_log >= 5.0:
+                                last_idle_log = idle
+                                print(f"[MP] idle for {idle:.0f}s (server kicks at 35s)", flush=True)
                 except Exception as e:
                     print(f"[MP] send error: {e}")
                     break
