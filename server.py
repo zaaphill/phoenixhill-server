@@ -22,7 +22,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 @app.on_event("startup")
 async def _startup():
     _init_db()
-    asyncio.create_task(_inactive_player_cleanup())
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -300,28 +299,6 @@ def get_published_build(build_id: int):
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────
 
-async def _inactive_player_cleanup():
-    """Kick players who haven't sent a move in 35 seconds."""
-    while True:
-        await asyncio.sleep(10)
-        now = time.time()
-        for build_id in list(_rooms.keys()):
-            players = _rooms.get(build_id, {})
-            to_kick = [
-                (pid, data) for pid, data in list(players.items())
-                if now - data.get("last_active", now) > 35
-            ]
-            for pid, data in to_kick:
-                players.pop(pid, None)
-                print(f"[WS] {data['username']} inactive, closing (room {build_id})", flush=True)
-                try:
-                    await data["ws"].close(code=4008)
-                except Exception:
-                    pass
-                await _broadcast(build_id, {"type": "left", "player_id": pid})
-            if build_id in _rooms and not _rooms[build_id]:
-                del _rooms[build_id]
-
 
 async def _broadcast(build_id: int, msg: dict, exclude: str = None):
     dead = []
@@ -359,6 +336,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         print(f"[WS] kicked old session for {username} ({spid})", flush=True)
         if old_data:
             try:
+                await old_data["ws"].send_json({"type": "kicked", "reason": "duplicate"})
                 await old_data["ws"].close(code=4009)
             except Exception:
                 pass
@@ -370,7 +348,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # the classic concurrent-write bug: another player's 20 Hz move broadcast
     # yields into our state send and corrupts the frame → 1005.
     others = {
-        pid: {k: v for k, v in d.items() if k not in ("ws", "last_active")}
+        pid: {k: v for k, v in d.items() if k != "ws"}
         for pid, d in _rooms.get(build_id, {}).items()
     }
     print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]}", flush=True)
@@ -386,7 +364,6 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     _rooms.setdefault(build_id, {})[player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
-        "last_active": time.time(),
     }
     await _broadcast(build_id, {
         "type": "joined", "player_id": player_id, "username": username,
@@ -394,7 +371,16 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
 
     try:
         while True:
-            msg = await websocket.receive_json()
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=35.0)
+            except asyncio.TimeoutError:
+                print(f"[WS] {username}: inactive 35s, kicking (room {build_id})", flush=True)
+                try:
+                    await websocket.send_json({"type": "kicked", "reason": "inactivity"})
+                    await websocket.close(code=4008)
+                except Exception:
+                    pass
+                break
             if msg.get("type") == "move":
                 entry = _rooms.get(build_id, {}).get(player_id)
                 if not entry:
@@ -402,7 +388,6 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                 entry.update({
                     "x": msg.get("x", 0.0), "y": msg.get("y", 0.0),
                     "z": msg.get("z", 0.0), "h": msg.get("h", 0.0),
-                    "last_active": time.time(),
                 })
                 await _broadcast(build_id, {
                     "type": "move", "player_id": player_id,
