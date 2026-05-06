@@ -266,6 +266,15 @@ def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
 
 
+# Bump GAME_VERSION and set DOWNLOAD_URL whenever you publish a new exe.
+GAME_VERSION = "1.0.0"
+DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/latest"
+
+@app.get("/api/game_version")
+def game_version():
+    return {"version": GAME_VERSION, "download_url": DOWNLOAD_URL}
+
+
 @app.get("/api/published/{build_id}")
 def get_published_build(build_id: int):
     c = _db()

@@ -241,6 +241,10 @@ class MultiplayerMixin:
             except Exception:
                 pass
 
+            # Clear is_moving if no position update has arrived in 0.25 s
+            if d.get("is_moving") and (time.time() - d.get("last_move_time", 0)) > 0.25:
+                d["is_moving"] = False
+
             # Walking animation
             if d.get("is_moving"):
                 d["walk_angle"] += _WALK_SPEED * dt
@@ -426,7 +430,7 @@ class MultiplayerMixin:
             "la_piv": la_piv, "ra_piv": ra_piv,
             "ll_piv": ll_piv, "rl_piv": rl_piv,
             "walk_angle": 0.0, "is_moving": False,
-            "last_pos": None,
+            "last_pos": None, "last_move_time": 0.0,
             "target_pos": None, "target_h": 0.0,
             "interp_pos": None, "interp_h": 0.0,
         }
@@ -450,6 +454,8 @@ class MultiplayerMixin:
         h = float(data.get("h", 0.0))
         lp = d["last_pos"]
         d["is_moving"] = lp is not None and (abs(x - lp[0]) > 0.01 or abs(y - lp[1]) > 0.01)
+        if d["is_moving"]:
+            d["last_move_time"] = time.time()
         d["last_pos"]   = (x, y, z)
         d["target_pos"] = (x, y, z)
         d["target_h"]   = h
