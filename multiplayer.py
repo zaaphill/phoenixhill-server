@@ -2,6 +2,7 @@ import asyncio
 import json
 import queue
 import threading
+import time
 from math import sin, pi
 
 from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectLabel, DirectButton
@@ -157,30 +158,33 @@ class MultiplayerMixin:
                     })
 
     async def _mp_send(self, ws):
-        send_count = 0
+        last_pos = None
+        last_send = time.monotonic()
         try:
             while self._mp_connected:
                 try:
                     char = getattr(self, "character", None)
                     if char:
                         pos = char.getPos()
-                        await ws.send(json.dumps({
-                            "type": "move",
-                            "x": round(float(pos.x), 2),
-                            "y": round(float(pos.y), 2),
-                            "z": round(float(pos.z), 2),
-                            "h": round(float(char.getH()), 1),
-                        }))
-                        send_count += 1
-                        # Every ~10 s (200 msgs × 50 ms) log that we're still sending.
-                        # This is also why the server's 35 s inactivity timer never fires
-                        # for a running client — each send resets it.
-                        if send_count % 200 == 0:
-                            print(f"[MP] send heartbeat: {send_count} moves sent — server 35s timer keeps resetting", flush=True)
+                        h   = char.getH()
+                        cur = (round(float(pos.x), 2), round(float(pos.y), 2),
+                               round(float(pos.z), 2), round(float(h), 1))
+                        now = time.monotonic()
+                        moved     = cur != last_pos
+                        keep_alive = (now - last_send) >= 25.0
+                        if moved or keep_alive:
+                            await ws.send(json.dumps({
+                                "type": "move",
+                                "x": cur[0], "y": cur[1], "z": cur[2], "h": cur[3],
+                            }))
+                            if keep_alive and not moved:
+                                print(f"[MP] send: keep-alive (still for {now - last_send:.0f}s) — 35s timer reset", flush=True)
+                            last_pos  = cur
+                            last_send = now
                 except Exception as e:
                     print(f"[MP] send error: {e}")
                     break
-                await asyncio.sleep(0.05)   # 20 Hz
+                await asyncio.sleep(0.05)   # 20 Hz poll
         finally:
             # Always send a clean close frame when the send loop exits,
             # whether from _mp_connected=False (window close / menu) or a send error.
