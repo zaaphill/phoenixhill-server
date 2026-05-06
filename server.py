@@ -3,7 +3,7 @@ PhoenixHill auth server
 Run with:  python server.py
 Requires:  pip install fastapi uvicorn
 """
-import hashlib, os, secrets, sqlite3, time, traceback, uuid
+import asyncio, hashlib, os, secrets, sqlite3, time, traceback, uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +22,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 @app.on_event("startup")
 async def _startup():
     _init_db()
+    asyncio.create_task(_inactive_player_cleanup())
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -299,6 +300,29 @@ def get_published_build(build_id: int):
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────
 
+async def _inactive_player_cleanup():
+    """Kick players who haven't sent a move in 35 seconds."""
+    while True:
+        await asyncio.sleep(10)
+        now = time.time()
+        for build_id in list(_rooms.keys()):
+            players = _rooms.get(build_id, {})
+            to_kick = [
+                (pid, data) for pid, data in list(players.items())
+                if now - data.get("last_active", now) > 35
+            ]
+            for pid, data in to_kick:
+                players.pop(pid, None)
+                print(f"[WS] {data['username']} inactive, closing (room {build_id})", flush=True)
+                try:
+                    await data["ws"].close(code=4008)
+                except Exception:
+                    pass
+                await _broadcast(build_id, {"type": "left", "player_id": pid})
+            if build_id in _rooms and not _rooms[build_id]:
+                del _rooms[build_id]
+
+
 async def _broadcast(build_id: int, msg: dict, exclude: str = None):
     dead = []
     for pid, pdata in list(_rooms.get(build_id, {}).items()):
@@ -331,8 +355,13 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         _rooms[build_id] = {}
     stale = [pid for pid, d in list(_rooms[build_id].items()) if d["username"] == username]
     for spid in stale:
-        _rooms[build_id].pop(spid, None)
+        old_data = _rooms[build_id].pop(spid, None)
         print(f"[WS] kicked old session for {username} ({spid})", flush=True)
+        if old_data:
+            try:
+                await old_data["ws"].close(code=4009)
+            except Exception:
+                pass
         await _broadcast(build_id, {"type": "left", "player_id": spid})
 
     # Snapshot the room and send state BEFORE adding ourselves to _rooms.
@@ -341,7 +370,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # the classic concurrent-write bug: another player's 20 Hz move broadcast
     # yields into our state send and corrupts the frame → 1005.
     others = {
-        pid: {k: v for k, v in d.items() if k != "ws"}
+        pid: {k: v for k, v in d.items() if k not in ("ws", "last_active")}
         for pid, d in _rooms.get(build_id, {}).items()
     }
     print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]}", flush=True)
@@ -357,6 +386,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     _rooms.setdefault(build_id, {})[player_id] = {
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
+        "last_active": time.time(),
     }
     await _broadcast(build_id, {
         "type": "joined", "player_id": player_id, "username": username,
@@ -372,6 +402,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                 entry.update({
                     "x": msg.get("x", 0.0), "y": msg.get("y", 0.0),
                     "z": msg.get("z", 0.0), "h": msg.get("h", 0.0),
+                    "last_active": time.time(),
                 })
                 await _broadcast(build_id, {
                     "type": "move", "player_id": player_id,
