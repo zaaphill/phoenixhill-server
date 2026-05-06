@@ -212,6 +212,8 @@ class MultiplayerMixin:
                     self._handle_mp_msg(q.get_nowait())
                 except queue.Empty:
                     break
+                except Exception as _e:
+                    print(f"[MP] _handle_mp_msg error: {_e}", flush=True)
 
         t = min(1.0, _LERP * dt)
 
