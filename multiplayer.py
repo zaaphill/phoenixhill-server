@@ -133,6 +133,7 @@ class MultiplayerMixin:
 
     async def _mp_recv(self, ws):
         received_any = False
+        got_kicked   = False
         try:
             async for raw in ws:
                 if not received_any:
@@ -142,13 +143,16 @@ class MultiplayerMixin:
                     msg = json.loads(raw)
                     if msg.get("type") not in ("move",):
                         print(f"[MP] recv type={msg.get('type')}")
+                    if msg.get("type") == "kicked":
+                        got_kicked = True
                     self._mp_queue.put_nowait(msg)
                 except Exception as e:
                     print(f"[MP] recv parse error: {e}")
         except Exception as e:
             code = getattr(getattr(e, "rcvd", None), "code", None)
-            if code in (4008, 4009):
-                self._mp_connected = False  # prevent auto-reconnect after being kicked
+            if code in (4008, 4009) or got_kicked:
+                # Server kicked us — stop retry loop regardless of close code
+                self._mp_connected = False
             else:
                 print(f"[MP] recv loop ended: {e}")
                 if not received_any:
