@@ -4,7 +4,7 @@ import queue
 import threading
 from math import sin, pi
 
-from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectLabel
+from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectLabel, DirectButton
 from direct.task import Task
 from panda3d.core import TextNode
 
@@ -40,6 +40,8 @@ class MultiplayerMixin:
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
         self._ws                = None
+        self._mp_recv_ok        = False
+        self._disconnect_popup  = None
         self._mp_loop           = asyncio.new_event_loop()
         self._chat_input_active = False
         print(f"[MP] start_multiplayer build_id={build_id} gen={gen}")
@@ -51,25 +53,8 @@ class MultiplayerMixin:
         t.start()
         self._mp_thread = t
         self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
-        if not getattr(self, "_mp_atexit_registered", False):
-            import atexit
-            atexit.register(self._mp_atexit)
-            self._mp_atexit_registered = True
         self._setup_chat_ui()
         self.accept("/", self._open_chat_input)
-
-    def _mp_atexit(self):
-        if not getattr(self, "_mp_connected", False):
-            return
-        self._mp_connected = False
-        token    = getattr(self, "_session_token", None)
-        build_id = getattr(self, "_mp_build_id",   None)
-        if token and build_id:
-            try:
-                import auth_client
-                auth_client.leave_room(token, build_id)
-            except Exception:
-                pass
 
     def stop_multiplayer(self):
         if not getattr(self, "_mp_connected", False):
@@ -105,25 +90,14 @@ class MultiplayerMixin:
         ws_base = _cfg_mod.get()["ws"]
         uri = f"{ws_base}/ws/{build_id}?token={token}"
 
-        # Remove any stale server-side session BEFORE opening the new WebSocket.
-        # This prevents the eviction-broadcast race that causes the 1005 loop.
-        try:
-            import auth_client as _ac
-            print(f"[MP] pre-connect leave_room ...")
-            await asyncio.get_running_loop().run_in_executor(
-                None, _ac.leave_room, token, build_id)
-            print(f"[MP] pre-connect leave_room done")
-        except Exception as e:
-            print(f"[MP] pre-connect leave_room error: {e}")
-
         retry = 0
         while self._mp_connected and self._mp_generation == gen:
             print(f"[MP] connecting -> {uri}")
+            self._mp_recv_ok = False
             try:
-                async with ws_lib.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+                async with ws_lib.connect(uri, ping_interval=None) as ws:
                     self._ws = ws
                     print("[MP] WebSocket connected OK")
-                    retry = 0
                     self._mp_queue.put_nowait({"type": "_connected"})
                     await asyncio.gather(
                         self._mp_recv(ws),
@@ -138,13 +112,15 @@ class MultiplayerMixin:
                 self._ws = None
             if not self._mp_connected or self._mp_generation != gen:
                 break
+            # Only reset the retry counter if we actually received data this session.
+            if self._mp_recv_ok:
+                retry = 0
             retry += 1
             if retry > 8:
                 self._mp_queue.put_nowait({"type": "_error", "msg": "Could not reconnect to server"})
                 break
             wait = 0.5 if retry == 1 else min(2 ** (retry - 1), 30)
             print(f"[MP] reconnecting in {wait}s (attempt {retry})")
-            # Sleep in short chunks so _mp_connected=False is noticed quickly.
             elapsed = 0.0
             while elapsed < wait and self._mp_connected and self._mp_generation == gen:
                 chunk = min(0.1, wait - elapsed)
@@ -158,6 +134,8 @@ class MultiplayerMixin:
         received_any = False
         try:
             async for raw in ws:
+                if not received_any:
+                    self._mp_recv_ok = True
                 received_any = True
                 try:
                     msg = json.loads(raw)
@@ -167,12 +145,16 @@ class MultiplayerMixin:
                 except Exception as e:
                     print(f"[MP] recv parse error: {e}")
         except Exception as e:
-            print(f"[MP] recv loop ended: {e}")
-            if not received_any:
-                self._mp_queue.put_nowait({
-                    "type": "_error",
-                    "msg": "Server rejected connection — try logging out and back in",
-                })
+            code = getattr(getattr(e, "rcvd", None), "code", None)
+            if code in (4008, 4009):
+                self._mp_connected = False  # prevent auto-reconnect after being kicked
+            else:
+                print(f"[MP] recv loop ended: {e}")
+                if not received_any:
+                    self._mp_queue.put_nowait({
+                        "type": "_error",
+                        "msg": "Server rejected connection — try logging out and back in",
+                    })
 
     async def _mp_send(self, ws):
         try:
@@ -283,6 +265,17 @@ class MultiplayerMixin:
             print(f"[MP] ERROR: {err_text}")
             self._show_toast(f"MP: {err_text}"[:60], (1.0, 0.40, 0.40, 1), duration=6.0)
             return
+        if t == "kicked":
+            reason = msg.get("reason")
+            text = ("You were disconnected\ndue to inactivity."
+                    if reason == "inactivity"
+                    else "Another session connected\nwith your account.")
+            def _do_kick(task, text=text):
+                self.stop_multiplayer()
+                self._show_disconnect_popup(text)
+                return task.done
+            self.taskMgr.doMethodLater(0, _do_kick, "_kickedCleanup", appendTask=True)
+            return
         if t == "state":
             print(f"[MP] state: {len(msg.get('players', {}))} other players")
             for pid, d in msg.get("players", {}).items():
@@ -303,6 +296,51 @@ class MultiplayerMixin:
                 self._update_remote_player(pid, msg)
         elif t == "chat":
             self._add_chat_message(msg.get("username", "?"), msg.get("text", ""))
+
+    # ── Disconnect popup ─────────────────────────────────────────────────
+
+    def _show_disconnect_popup(self, message):
+        if getattr(self, "_disconnect_popup", None):
+            return
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.82),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=100,
+        )
+        self._disconnect_popup = overlay
+        card = DirectFrame(
+            frameColor=(0.11, 0.12, 0.17, 0.97),
+            frameSize=(-0.60, 0.60, -0.22, 0.22),
+            parent=overlay,
+        )
+        DirectLabel(
+            text=message,
+            text_fg=(0.88, 0.90, 0.95, 1),
+            text_scale=0.040,
+            frameColor=(0, 0, 0, 0),
+            parent=card,
+            pos=(0, 0, 0.07),
+        )
+        def _on_ok():
+            p = getattr(self, "_disconnect_popup", None)
+            if p:
+                try:
+                    p.destroy()
+                except Exception:
+                    pass
+                self._disconnect_popup = None
+            self._return_to_menu()
+        DirectButton(
+            text="OK",
+            text_fg=(0.88, 0.90, 0.95, 1),
+            text_scale=0.042,
+            frameColor=(0.18, 0.38, 0.72, 1),
+            frameSize=(-0.12, 0.12, -0.038, 0.038),
+            parent=card,
+            pos=(0, 0, -0.10),
+            command=_on_ok,
+            relief=1,
+        )
 
     # ── Remote player model ───────────────────────────────────────────────
 

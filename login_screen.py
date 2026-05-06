@@ -278,7 +278,7 @@ class LoginScreenMixin:
     def _on_auto_login_ok(self, token, username, task):
         self._session_token    = token
         self._session_username = username
-        self._build_main_menu()
+        self._build_browse_screen()
         return task.done
 
     def _show_login_task(self, task):
@@ -431,7 +431,7 @@ class LoginScreenMixin:
         if self._login_ui:
             self._login_ui.destroy()
             self._login_ui = None
-        self._build_main_menu()
+        self._build_browse_screen()
         return task.done
 
     def _on_login_fail(self, msg, task):
@@ -916,15 +916,14 @@ class LoginScreenMixin:
 
     def _return_to_menu(self):
         """Called from the Menu button in the top bar."""
-        token    = getattr(self, "_session_token", None)
-        build_id = getattr(self, "_mp_build_id",   None)
+        popup = getattr(self, "_disconnect_popup", None)
+        if popup:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+            self._disconnect_popup = None
         self.stop_multiplayer()
-        if token and build_id:
-            threading.Thread(
-                target=auth_client.leave_room,
-                args=(token, build_id),
-                daemon=True,
-            ).start()
         self.character.hide()
         self.is_playtest   = False
         self._clear_all_bricks()
