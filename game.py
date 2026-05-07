@@ -7,6 +7,7 @@ from panda3d.core import (
 )
 import os
 import struct
+import sys
 
 loadPrcFileData("", "win-size 1280 720")
 loadPrcFileData("", "win-origin -2 -2")
@@ -190,7 +191,28 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
         self.setup_login_screen()
 
+        self.accept("window-event", self._on_window_event)
+
+    def _on_window_event(self, window):
+        if window is not None and not window.getProperties().getOpen():
+            print("[APP] window closing")
+            self._graceful_exit()
+
+    def _graceful_exit(self):
+        if getattr(self, "_exiting", False):
+            return
+        self._exiting = True
+        try:
+            if hasattr(self, "stop_multiplayer"):
+                print("[APP] stopping multiplayer")
+                self.stop_multiplayer()
+        except Exception as e:
+            print("[APP] multiplayer shutdown error:", e)
+        try:
+            ShowBase.userExit(self)
+        except Exception:
+            sys.exit(0)
+
     def userExit(self):
         """Called when the window X button is clicked."""
-        self.stop_multiplayer()
-        ShowBase.userExit(self)
+        self._graceful_exit()
