@@ -57,8 +57,8 @@ class MultiplayerMixin:
         self._setup_chat_ui()
         self.accept("/", self._open_chat_input)
 
-    def stop_multiplayer(self):
-        if not getattr(self, "_mp_connected", False):
+    def stop_multiplayer(self, force=False):
+        if not force and not getattr(self, "_mp_connected", False):
             return
         self._mp_connected = False
         ws   = getattr(self, "_ws",      None)
@@ -160,8 +160,6 @@ class MultiplayerMixin:
                         "type": "_error",
                         "msg": "Server rejected connection — try logging out and back in",
                     })
-        if got_kicked:
-            self._mp_connected = False  # safety: clean close still blocks reconnect
 
     async def _mp_send(self, ws):
         last_pos = None
@@ -214,8 +212,6 @@ class MultiplayerMixin:
                     self._handle_mp_msg(q.get_nowait())
                 except queue.Empty:
                     break
-                except Exception as _e:
-                    print(f"[MP] _handle_mp_msg error: {_e}")
 
         t = min(1.0, _LERP * dt)
 
@@ -292,7 +288,7 @@ class MultiplayerMixin:
                     if reason == "inactivity"
                     else "Another session connected\nwith your account.")
             def _do_kick(task, text=text):
-                self.stop_multiplayer()
+                self.stop_multiplayer(force=True)
                 self._show_disconnect_popup(text)
                 return task.done
             self.taskMgr.doMethodLater(0, _do_kick, "_kickedCleanup", appendTask=True)
