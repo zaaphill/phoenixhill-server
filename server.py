@@ -297,7 +297,15 @@ async def _broadcast(build_id: int, msg: dict, exclude: str = None):
 
 @app.websocket("/ws/{build_id}")
 async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
-    await websocket.accept()
+    print(f"[WS] incoming connection build_id={build_id}", flush=True)
+    try:
+        await websocket.accept()
+        print(f"[WS] accepted build_id={build_id}", flush=True)
+    except Exception as _e:
+        print(f"[WS] accept FAILED: {_e}", flush=True)
+        traceback.print_exc()
+        return
+
     try:
         sess = _get_session(token)
     except HTTPException:
@@ -306,6 +314,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
 
     player_id = str(uuid.uuid4())
     username  = sess["username"]
+    print(f"[WS] {username} authenticated (room {build_id})", flush=True)
 
     # Evict stale same-username connections.
     # We are NOT in _rooms yet, so no other player's broadcast can write to our
@@ -329,11 +338,17 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # state send has exactly one writer — us.  Adding first then sending is
     # the classic concurrent-write bug: another player's 20 Hz move broadcast
     # yields into our state send and corrupts the frame → 1005.
-    others = {
-        pid: {k: v for k, v in d.items() if k != "ws"}
-        for pid, d in _rooms.get(build_id, {}).items()
-    }
-    print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]}", flush=True)
+    try:
+        others = {
+            pid: {k: v for k, v in d.items() if k != "ws"}
+            for pid, d in _rooms.get(build_id, {}).items()
+        }
+    except Exception as _e:
+        print(f"[WS] {username}: state snapshot FAILED: {_e}", flush=True)
+        traceback.print_exc()
+        return
+
+    print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]} payload={others}", flush=True)
     try:
         await websocket.send_json({"type": "state", "players": others})
         print(f"[WS] {username}: state sent OK", flush=True)
@@ -347,9 +362,15 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         "ws": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
     }
-    await _broadcast(build_id, {
-        "type": "joined", "player_id": player_id, "username": username,
-    }, exclude=player_id)
+    print(f"[WS] {username}: added to room, broadcasting joined", flush=True)
+    try:
+        await _broadcast(build_id, {
+            "type": "joined", "player_id": player_id, "username": username,
+        }, exclude=player_id)
+        print(f"[WS] {username}: joined broadcast done", flush=True)
+    except Exception as _e:
+        print(f"[WS] {username}: joined broadcast FAILED: {_e}", flush=True)
+        traceback.print_exc()
 
     last_msg_time = time.time()
     msg_count = 0
@@ -370,7 +391,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
             msg_count += 1
             # Log a heartbeat every ~10 s (200 messages at 20 Hz) so the logs show the timer resetting
             if msg_count % 200 == 0:
-                print(f"[WS] {username}: active — {msg_count} msgs, last msg 0s ago (room {build_id})", flush=True)
+                print(f"[WS] {username}: active — {msg_count} msgs (room {build_id})", flush=True)
             if msg.get("type") == "move":
                 entry = _rooms.get(build_id, {}).get(player_id)
                 if not entry:
@@ -397,6 +418,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         print(f"[WS] {username}: clean disconnect (code={code}, room {build_id})", flush=True)
     except Exception as _e:
         print(f"[WS] {username}: recv loop error: {_e} (room {build_id})", flush=True)
+        traceback.print_exc()
     finally:
         # Check BEFORE popping — if already absent, we were evicted and our
         # "left" was already broadcast by the eviction code.  Skipping the

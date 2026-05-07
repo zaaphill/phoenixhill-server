@@ -45,6 +45,8 @@ class MultiplayerMixin:
         self._disconnect_popup  = None
         self._mp_loop           = asyncio.new_event_loop()
         self._chat_input_active = False
+        if not hasattr(self, "_mp_task"):
+            self._mp_task = None
         print(f"[MP] start_multiplayer build_id={build_id} gen={gen}")
         t = threading.Thread(
             target=self._run_mp_loop,
@@ -67,7 +69,7 @@ class MultiplayerMixin:
             asyncio.run_coroutine_threadsafe(ws.close(), loop)
         if getattr(self, "_mp_task", None) is not None:
             try:
-                self.taskMgr.remove(self._mp_task)
+                self.taskMgr.remove("mpUpdateTask")
             except Exception:
                 pass
             self._mp_task = None
