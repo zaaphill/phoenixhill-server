@@ -313,7 +313,7 @@ class LoginScreenMixin:
         )
         DirectLabel(
             text="Username",
-            text_fg=TEXT_D, text_scale=0.036,
+            text_fg=TEXT, text_scale=0.036,
             frameColor=(0, 0, 0, 0),
             parent=root, pos=(-0.20, 0, 0.175),
         )
@@ -327,7 +327,7 @@ class LoginScreenMixin:
         )
         DirectLabel(
             text="Password",
-            text_fg=TEXT_D, text_scale=0.036,
+            text_fg=TEXT, text_scale=0.036,
             frameColor=(0, 0, 0, 0),
             parent=root, pos=(-0.20, 0, 0.005),
         )
@@ -355,7 +355,7 @@ class LoginScreenMixin:
             command=self._do_login, relief=1,
         )
         DirectButton(
-            text="Register",
+            text="Sign Up",
             text_fg=TEXT, text_scale=0.042,
             frameColor=BTN,
             frameSize=(-0.155, 0.155, -0.038, 0.038),
