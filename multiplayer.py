@@ -53,19 +53,24 @@ class MultiplayerMixin:
         )
         t.start()
         self._mp_thread = t
-        self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
+        if getattr(self, "_mp_task", None) is None:
+            self._mp_task = self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
         self._setup_chat_ui()
         self.accept("/", self._open_chat_input)
 
     def stop_multiplayer(self):
-        if not getattr(self, "_mp_connected", False):
-            return
+        # Always perform local cleanup even if networking already died.
         self._mp_connected = False
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
         if ws and loop and not loop.is_closed():
             asyncio.run_coroutine_threadsafe(ws.close(), loop)
-        self.taskMgr.remove("mpUpdateTask")
+        if getattr(self, "_mp_task", None) is not None:
+            try:
+                self.taskMgr.remove(self._mp_task)
+            except Exception:
+                pass
+            self._mp_task = None
         for pid in list(getattr(self, "_remote_players", {}).keys()):
             self._remove_remote_player(pid)
         self._remote_players = {}
@@ -206,6 +211,9 @@ class MultiplayerMixin:
     # ── Panda3D main-thread task ───────────────────────────────────────────
 
     def _mp_update_task(self, task):
+        if getattr(self, "_mp_task", None) is None:
+            return task.done
+
         dt = globalClock.getDt()
 
         # Drain incoming message queue
