@@ -30,7 +30,7 @@ class MultiplayerMixin:
 
     def start_multiplayer(self, build_id, token):
         # Guard: stop existing session so the old asyncio thread can't clobber new state
-        if getattr(self, "_mp_connected", False):
+        if getattr(self, "_mp_active", False):
             print("[MP] stopping existing session before starting new one")
             self.stop_multiplayer()
 
@@ -40,6 +40,7 @@ class MultiplayerMixin:
         self._remote_players    = {}
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
+        self._mp_active         = True   # main-thread guard for stop_multiplayer
         self._ws                = None
         self._mp_recv_ok        = False
         self._disconnect_popup  = None
@@ -58,8 +59,9 @@ class MultiplayerMixin:
         self.accept("/", self._open_chat_input)
 
     def stop_multiplayer(self):
-        if not getattr(self, "_mp_connected", False):
+        if not getattr(self, "_mp_active", False):
             return
+        self._mp_active    = False
         self._mp_connected = False
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
@@ -160,6 +162,11 @@ class MultiplayerMixin:
                         "type": "_error",
                         "msg": "Server rejected connection — try logging out and back in",
                     })
+        # Handle clean close (no exception): if server sent "kicked" then closed
+        # gracefully, the async-for loop ends without raising — caught_kicked would
+        # be True but the except block above never ran.  Stop the reconnect loop.
+        if got_kicked:
+            self._mp_connected = False
 
     async def _mp_send(self, ws):
         last_pos = None
