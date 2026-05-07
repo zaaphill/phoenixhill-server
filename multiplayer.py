@@ -184,12 +184,7 @@ class MultiplayerMixin:
                             last_idle_log = 0
                         else:
                             idle = time.monotonic() - last_sent
-                            if idle >= 25.0:
-                                await ws.send(json.dumps({"type": "ping"}))
-                                last_sent     = time.monotonic()
-                                last_idle_log = 0
-                                print("[MP] keepalive sent", flush=True)
-                            elif idle - last_idle_log >= 5.0:
+                            if idle - last_idle_log >= 5.0:
                                 last_idle_log = idle
                                 print(f"[MP] idle for {idle:.0f}s (server kicks at 35s)", flush=True)
                 except Exception as e:
