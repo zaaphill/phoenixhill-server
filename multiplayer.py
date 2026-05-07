@@ -160,6 +160,11 @@ class MultiplayerMixin:
                         "type": "_error",
                         "msg": "Server rejected connection — try logging out and back in",
                     })
+        # If the server closed with a clean frame (no exception above) after sending
+        # "kicked", bump generation so _mp_main exits its retry loop without reconnecting.
+        # We leave _mp_connected=True so stop_multiplayer() still does full cleanup.
+        if got_kicked:
+            self._mp_generation = getattr(self, "_mp_generation", 0) + 1
 
     async def _mp_send(self, ws):
         last_pos = None
