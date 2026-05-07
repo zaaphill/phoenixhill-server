@@ -71,6 +71,3 @@ def get_published_build(build_id):
 
 def get_rooms():
     return _request("GET", "/api/rooms")
-
-def get_game_version():
-    return _request("GET", "/api/game_version")

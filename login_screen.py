@@ -210,59 +210,11 @@ class LoginScreenMixin:
             self._build_login_ui()
             self._set_status(f"Server error: {crash_msg}")
             return task.done
-        threading.Thread(target=self._check_for_update_thread, daemon=True).start()
         saved = self._load_saved_token()
         if saved:
             self._verify_token_async(*saved)
         else:
             self._build_login_ui()
-        return task.done
-
-    def _check_for_update_thread(self):
-        try:
-            import version as _ver
-            result, _ = auth_client.get_game_version()
-            if result and result.get("version") != _ver.VERSION:
-                url = result.get("download_url", "")
-                self.taskMgr.doMethodLater(
-                    0, self._show_update_banner, "_showUpdate",
-                    extraArgs=[result["version"], url], appendTask=True,
-                )
-        except Exception:
-            pass
-
-    def _show_update_banner(self, new_ver, url, task):
-        import webbrowser
-        banner = DirectFrame(
-            frameColor=(0.18, 0.38, 0.72, 0.95),
-            frameSize=(-0.70, 0.70, -0.040, 0.040),
-            parent=base.a2dTopCenter,
-            pos=(0, 0, -0.06),
-            sortOrder=200,
-        )
-        DirectLabel(
-            text=f"Update available: v{new_ver}",
-            text_fg=(1, 1, 1, 1), text_scale=0.032,
-            frameColor=(0, 0, 0, 0),
-            parent=banner, pos=(-0.18, 0, -0.010),
-        )
-        def _open():
-            webbrowser.open(url)
-        DirectButton(
-            text="Download",
-            text_fg=(1, 1, 1, 1), text_scale=0.030,
-            frameColor=(0.12, 0.58, 0.28, 1),
-            frameSize=(-0.10, 0.10, -0.025, 0.025),
-            parent=banner, pos=(0.50, 0, -0.010),
-            command=_open, relief=1,
-        )
-        DirectButton(
-            text="✕",
-            text_fg=(0.7, 0.7, 0.7, 1), text_scale=0.034,
-            frameColor=(0, 0, 0, 0),
-            parent=banner, pos=(0.66, 0, -0.010),
-            command=banner.destroy, relief=0,
-        )
         return task.done
 
     # ── Token file ─────────────────────────────────────────────────────────
