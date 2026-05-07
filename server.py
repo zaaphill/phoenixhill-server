@@ -266,15 +266,6 @@ def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
 
 
-# Bump GAME_VERSION and set DOWNLOAD_URL whenever you publish a new exe.
-GAME_VERSION = "1.0.0"
-DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/latest"
-
-@app.get("/api/game_version")
-def game_version():
-    return {"version": GAME_VERSION, "download_url": DOWNLOAD_URL}
-
-
 @app.get("/api/published/{build_id}")
 def get_published_build(build_id: int):
     c = _db()
@@ -369,11 +360,6 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
             except asyncio.TimeoutError:
                 idle = time.time() - last_msg_time
                 print(f"[WS] {username}: TIMEOUT — no message for {idle:.1f}s, kicking (room {build_id})", flush=True)
-                # Remove from room and broadcast "left" NOW, before closing the
-                # socket.  This guarantees other players see the ghost disappear
-                # even if the kicked client reconnects before the finally block runs.
-                _rooms.get(build_id, {}).pop(player_id, None)
-                await _broadcast(build_id, {"type": "left", "player_id": player_id})
                 try:
                     await websocket.send_json({"type": "kicked", "reason": "inactivity"})
                     await websocket.close(code=4008)
