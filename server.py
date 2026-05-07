@@ -369,6 +369,11 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
             except asyncio.TimeoutError:
                 idle = time.time() - last_msg_time
                 print(f"[WS] {username}: TIMEOUT — no message for {idle:.1f}s, kicking (room {build_id})", flush=True)
+                # Remove from room and broadcast "left" NOW, before closing the
+                # socket.  This guarantees other players see the ghost disappear
+                # even if the kicked client reconnects before the finally block runs.
+                _rooms.get(build_id, {}).pop(player_id, None)
+                await _broadcast(build_id, {"type": "left", "player_id": player_id})
                 try:
                     await websocket.send_json({"type": "kicked", "reason": "inactivity"})
                     await websocket.close(code=4008)

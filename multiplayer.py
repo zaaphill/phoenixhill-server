@@ -160,6 +160,8 @@ class MultiplayerMixin:
                         "type": "_error",
                         "msg": "Server rejected connection — try logging out and back in",
                     })
+        if got_kicked:
+            self._mp_connected = False  # safety: clean close still blocks reconnect
 
     async def _mp_send(self, ws):
         last_pos = None
@@ -212,6 +214,8 @@ class MultiplayerMixin:
                     self._handle_mp_msg(q.get_nowait())
                 except queue.Empty:
                     break
+                except Exception as _e:
+                    print(f"[MP] _handle_mp_msg error: {_e}")
 
         t = min(1.0, _LERP * dt)
 
