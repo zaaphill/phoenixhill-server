@@ -30,7 +30,7 @@ class MultiplayerMixin:
 
     def start_multiplayer(self, build_id, token):
         # Guard: stop existing session so the old asyncio thread can't clobber new state
-        if getattr(self, "_mp_active", False):
+        if getattr(self, "_mp_connected", False):
             print("[MP] stopping existing session before starting new one")
             self.stop_multiplayer()
 
@@ -40,7 +40,6 @@ class MultiplayerMixin:
         self._remote_players    = {}
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
-        self._mp_active         = True   # main-thread guard for stop_multiplayer
         self._ws                = None
         self._mp_recv_ok        = False
         self._disconnect_popup  = None
@@ -59,9 +58,8 @@ class MultiplayerMixin:
         self.accept("/", self._open_chat_input)
 
     def stop_multiplayer(self):
-        if not getattr(self, "_mp_active", False):
+        if not getattr(self, "_mp_connected", False):
             return
-        self._mp_active    = False
         self._mp_connected = False
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
@@ -153,7 +151,6 @@ class MultiplayerMixin:
         except Exception as e:
             code = getattr(getattr(e, "rcvd", None), "code", None)
             if code in (4008, 4009) or got_kicked:
-                # Server kicked us — stop retry loop regardless of close code
                 self._mp_connected = False
             else:
                 print(f"[MP] recv loop ended: {e}")
@@ -162,11 +159,11 @@ class MultiplayerMixin:
                         "type": "_error",
                         "msg": "Server rejected connection — try logging out and back in",
                     })
-        # Handle clean close (no exception): if server sent "kicked" then closed
-        # gracefully, the async-for loop ends without raising — caught_kicked would
-        # be True but the except block above never ran.  Stop the reconnect loop.
+        # Clean close (no exception): server sent "kicked" then closed gracefully.
+        # Bump generation so _mp_main exits the retry loop without reconnecting,
+        # while leaving _mp_connected=True so stop_multiplayer() can do full cleanup.
         if got_kicked:
-            self._mp_connected = False
+            self._mp_generation = getattr(self, "_mp_generation", 0) + 1
 
     async def _mp_send(self, ws):
         last_pos = None
@@ -220,7 +217,7 @@ class MultiplayerMixin:
                 except queue.Empty:
                     break
                 except Exception as _e:
-                    print(f"[MP] _handle_mp_msg error: {_e}", flush=True)
+                    print(f"[MP] msg error: {_e}", flush=True)
 
         t = min(1.0, _LERP * dt)
 
