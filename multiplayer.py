@@ -66,16 +66,7 @@ class MultiplayerMixin:
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
         if ws and loop and not loop.is_closed():
-            async def _close_ws(w):
-                try:
-                    await w.close(code=1000)
-                except Exception:
-                    pass
-            future = asyncio.run_coroutine_threadsafe(_close_ws(ws), loop)
-            try:
-                future.result(timeout=2.0)
-            except Exception:
-                pass
+            asyncio.run_coroutine_threadsafe(ws.close(), loop)
         if getattr(self, "_mp_task", None) is not None:
             try:
                 self.taskMgr.remove("mpUpdateTask")
