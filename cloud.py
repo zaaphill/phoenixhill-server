@@ -148,7 +148,7 @@ class CloudMixin:
 
     # ── Toast notification ─────────────────────────────────────────────────
 
-    def _show_toast(self, msg, color=None):
+    def _show_toast(self, msg, color=None, duration=2.5):
         if color is None:
             color = GREEN
         prev = getattr(self, "_toast", None)
@@ -164,7 +164,7 @@ class CloudMixin:
             frameSize=(-0.34, 0.34, -0.026, 0.026),
             pos=(0, 0, -0.88),
         )
-        self.taskMgr.doMethodLater(2.5, self._dismiss_toast, "_dismissToast",
+        self.taskMgr.doMethodLater(duration, self._dismiss_toast, "_dismissToast",
                                    appendTask=True)
 
     def _dismiss_toast(self, task):
