@@ -22,6 +22,7 @@ setup(
                 "textures/**",
                 "citrus_orchard_puresky_4k.exr",
                 "Config.prc",
+                "arrow_nw.png",
             ],
 
             # Extra pip packages to download and bundle (panda3d is automatic)
