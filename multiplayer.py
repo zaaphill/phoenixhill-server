@@ -29,24 +29,33 @@ _MAX_CHAT   = 8      # chat lines shown
 class MultiplayerMixin:
 
     def start_multiplayer(self, build_id, token):
-        # Guard: stop existing session so the old asyncio thread can't clobber new state
-        if getattr(self, "_mp_connected", False):
-            print("[MP] stopping existing session before starting new one")
+        print("[MP] start_multiplayer requested")
+
+        # Always fully stop the old session first, regardless of its state.
+        try:
             self.stop_multiplayer()
+        except Exception as e:
+            print("[MP] stop before restart failed:", e)
+
+        print(f"[MP] joining new build {build_id}")
+
+        # Remove stale remote player models from the scene before starting fresh.
+        for pid in list(getattr(self, "_remote_players", {}).keys()):
+            self._remove_remote_player(pid)
 
         gen = getattr(self, "_mp_generation", 0) + 1
         self._mp_generation     = gen
         self._mp_build_id       = build_id
-        self._remote_players    = {}
+        self._remote_players    = {}          # clear on join transition
         self._mp_queue          = queue.Queue()
         self._mp_connected      = True
+        self._mp_joined         = False
         self._ws                = None
         self._mp_recv_ok        = False
         self._disconnect_popup  = None
         self._mp_loop           = asyncio.new_event_loop()
         self._chat_input_active = False
-        if not hasattr(self, "_mp_task"):
-            self._mp_task = None
+        self._mp_task           = None
         print(f"[MP] start_multiplayer build_id={build_id} gen={gen}")
         t = threading.Thread(
             target=self._run_mp_loop,
@@ -55,27 +64,40 @@ class MultiplayerMixin:
         )
         t.start()
         self._mp_thread = t
-        if getattr(self, "_mp_task", None) is None:
-            self._mp_task = self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
+        self._mp_task = self.taskMgr.add(self._mp_update_task, "mpUpdateTask")
         self._setup_chat_ui()
         self.accept("/", self._open_chat_input)
 
     def stop_multiplayer(self):
-        # Always perform local cleanup even if networking already died.
+        print("[MP] stopping old multiplayer session")
+
+        # Clear networking state — never clears _remote_players here.
         self._mp_connected = False
+        self._mp_joined    = False
+        self._mp_recv_ok   = False
+        self._mp_build_id  = None
+
+        # Close old websocket explicitly.
         ws   = getattr(self, "_ws",      None)
         loop = getattr(self, "_mp_loop", None)
         if ws and loop and not loop.is_closed():
-            asyncio.run_coroutine_threadsafe(ws.close(), loop)
-        if getattr(self, "_mp_task", None) is not None:
-            try:
-                self.taskMgr.remove("mpUpdateTask")
-            except Exception:
-                pass
-            self._mp_task = None
-        for pid in list(getattr(self, "_remote_players", {}).keys()):
-            self._remove_remote_player(pid)
-        self._remote_players = {}
+            async def _close_ws(w):
+                try:
+                    await w.close(code=1000)
+                except Exception:
+                    pass
+            asyncio.run_coroutine_threadsafe(_close_ws(ws), loop)
+            print("[MP] old websocket closed")
+        self._ws = None
+
+        # Always remove the task by name so no zombie survives into next session.
+        try:
+            self.taskMgr.remove("mpUpdateTask")
+            print("[MP] removed mpUpdateTask")
+        except Exception:
+            pass
+        self._mp_task = None
+
         self._teardown_chat_ui()
         self._teardown_player_count_label()
         self.ignore("/")

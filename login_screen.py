@@ -929,6 +929,9 @@ class LoginScreenMixin:
             self._disconnect_popup = None
         self._entering_play_mode = False
         self.stop_multiplayer()
+        for pid in list(getattr(self, "_remote_players", {}).keys()):
+            self._remove_remote_player(pid)
+        self._remote_players = {}
         self.character.hide()
         self.is_playtest   = False
         self._clear_all_bricks()
