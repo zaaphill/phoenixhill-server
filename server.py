@@ -398,7 +398,8 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # state send has exactly one writer — us.  Adding first then sending is
     # the classic concurrent-write bug: another player's 20 Hz move broadcast
     # yields into our state send and corrupts the frame → 1005.
-    print(f"[STATE_BUILD] room_before_snapshot={{{', '.join(f'{p}: {dict((k,v) for k,v in d.items() if k!=\"websocket\")}' for p,d in _rooms.get(build_id,{}).items())}}}", flush=True)
+    _snap = {p: {k: v for k, v in d.items() if k != "websocket"} for p, d in _rooms.get(build_id, {}).items()}
+    print(f"[STATE_BUILD] room_before_snapshot={_snap}", flush=True)
     try:
         others = {
             pid: {
