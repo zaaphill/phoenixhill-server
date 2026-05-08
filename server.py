@@ -77,6 +77,18 @@ def _init_db():
         c.execute("ALTER TABLE users ADD COLUMN avatar_colors TEXT")
     except Exception:
         pass
+    try:
+        c.execute("ALTER TABLE builds ADD COLUMN thumbnail TEXT")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE builds ADD COLUMN description TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE builds ADD COLUMN visits INTEGER DEFAULT 0")
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -280,7 +292,7 @@ def set_published(build_id: int, token: str, b: PublishBody):
 def browse_published():
     c = _db()
     rows = c.execute(
-        """SELECT b.id, b.name, b.updated_at, u.username
+        """SELECT b.id, b.name, b.updated_at, b.visits, b.description, b.thumbnail, u.username
            FROM builds b JOIN users u ON b.user_id = u.id
            WHERE b.published = 1
            ORDER BY b.updated_at DESC""",
@@ -323,10 +335,45 @@ def get_published_build(build_id: int):
         "SELECT id, name, data FROM builds WHERE id=? AND published=1",
         (build_id,),
     ).fetchone()
+    if row:
+        c.execute("UPDATE builds SET visits = COALESCE(visits,0)+1 WHERE id=?", (build_id,))
+        c.commit()
     c.close()
     if not row:
         raise HTTPException(404, "Build not found or not published")
     return {"ok": True, "id": row["id"], "name": row["name"], "data": row["data"]}
+
+
+class GameSettingsBody(BaseModel):
+    thumbnail:   str = ""    # base64-encoded PNG/JPG, or empty to clear
+    description: str = ""
+
+
+@app.put("/api/builds/{build_id}/settings")
+def update_game_settings(build_id: int, token: str, b: GameSettingsBody):
+    sess = _get_session(token)
+    c = _db()
+    c.execute(
+        "UPDATE builds SET thumbnail=?, description=? WHERE id=? AND user_id=?",
+        (b.thumbnail or None, b.description, build_id, sess["user_id"]),
+    )
+    c.commit()
+    c.close()
+    return {"ok": True}
+
+
+@app.get("/api/builds/{build_id}/settings")
+def get_game_settings(build_id: int, token: str):
+    sess = _get_session(token)
+    c = _db()
+    row = c.execute(
+        "SELECT thumbnail, description FROM builds WHERE id=? AND user_id=?",
+        (build_id, sess["user_id"]),
+    ).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(404, "Build not found")
+    return {"thumbnail": row["thumbnail"] or "", "description": row["description"] or ""}
 
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────

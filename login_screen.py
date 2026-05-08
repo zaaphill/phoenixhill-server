@@ -31,6 +31,31 @@ TEXT_D  = (0.54, 0.57, 0.65, 1.0)
 RED     = (1.0,  0.40, 0.40, 1.0)
 GREEN   = (0.45, 0.90, 0.55, 1.0)
 
+# ── RetroStudios-style browse palette ─────────────────────────────────────────
+_RS_BG      = (0.06, 0.05, 0.10, 1.0)
+_RS_NAV     = (0.09, 0.07, 0.15, 1.0)
+_RS_CARD    = (0.13, 0.11, 0.21, 1.0)
+_RS_ORANGE  = (0.91, 0.47, 0.13, 1.0)
+_RS_BORDER  = (0.18, 0.14, 0.28, 1.0)
+_RS_WHITE   = (1.00, 1.00, 1.00, 1.0)
+_RS_GRAY    = (0.58, 0.56, 0.65, 1.0)
+_RS_GREEN   = (0.27, 0.82, 0.43, 1.0)
+_RS_RED     = (0.85, 0.18, 0.18, 1.0)
+_THUMB_TINTS = [
+    (0.22, 0.12, 0.38, 1), (0.10, 0.18, 0.40, 1),
+    (0.12, 0.28, 0.20, 1), (0.36, 0.14, 0.10, 1),
+    (0.28, 0.10, 0.38, 1), (0.10, 0.26, 0.40, 1),
+    (0.18, 0.32, 0.12, 1), (0.36, 0.18, 0.28, 1),
+]
+_GRID_COLS  = 5
+_CARD_W     = 0.60
+_CARD_TH    = 0.34   # thumbnail height portion
+_CARD_INFO  = 0.16   # text area height below thumbnail
+_CARD_H     = _CARD_TH + _CARD_INFO  # 0.50
+_CARD_GAP_X = 0.04
+_CARD_GAP_Y = 0.04
+_PAGE_SIZE  = 15     # 5 cols × 3 rows
+
 
 class LoginScreenMixin:
 
@@ -81,13 +106,17 @@ class LoginScreenMixin:
         except Exception:
             pass
 
+    _REQUIRED_SERVER_API_VERSION = 4
+
     def _start_server(self):
         # If a working server is already running, check it has the latest API.
         result, _ = auth_client.browse_published()
         if result is not None:
             rooms_result, _ = auth_client.get_rooms()
             if rooms_result is not None:
-                return   # server is current — leave it alone
+                sv_result, _ = auth_client.get_server_version()
+                if sv_result and sv_result.get("api_version", 0) >= self._REQUIRED_SERVER_API_VERSION:
+                    return   # server is current — leave it alone
             # Server is running but outdated — fall through to kill + restart
 
         # Use a lock file so two instances that start simultaneously don't both
@@ -176,7 +205,7 @@ class LoginScreenMixin:
         """Background thread: start/connect to server, then poll until ready."""
         import config
         cfg = config.get()
-        if cfg["local"]:
+        if cfg["local"] and not getattr(sys, "frozen", False):
             self._install_server_deps()
             self._start_server()
         crash_msg = None
@@ -260,10 +289,30 @@ class LoginScreenMixin:
 
     # ── Auto-login ─────────────────────────────────────────────────────────
 
+    def _sync_avatar_from_server_bg(self, token, username):
+        """Fetch server-side avatar colors and merge into per-account local file (bg-thread safe).
+        If the server has no colors yet, push the local colors up so multiplayer sees them."""
+        try:
+            av_res, _ = auth_client.get_avatar(token)
+            server_colors = (av_res or {}).get("colors") or {}
+            local = self.load_avatar_colors(username)
+            if server_colors and isinstance(server_colors, dict):
+                for part in list(local.keys()):
+                    sc = server_colors.get(part)
+                    if sc and len(sc) == 4:
+                        local[part] = tuple(float(v) for v in sc)
+                self.save_avatar_colors(local, username)
+            else:
+                # Server has no colors yet — push local so multiplayer works immediately
+                auth_client.put_avatar(token, {k: list(v) for k, v in local.items()})
+        except Exception as e:
+            print(f"[Avatar] server sync: {e}")
+
     def _verify_token_async(self, token, username):
         def worker():
             result, _ = auth_client.verify(token)
             if result and result.get("ok"):
+                self._sync_avatar_from_server_bg(token, result["username"])
                 self.taskMgr.doMethodLater(
                     0, self._on_auto_login_ok, "_autoLoginOk",
                     extraArgs=[token, result["username"]], appendTask=True,
@@ -278,6 +327,7 @@ class LoginScreenMixin:
     def _on_auto_login_ok(self, token, username, task):
         self._session_token    = token
         self._session_username = username
+        self.apply_avatar_colors()
         self._build_browse_screen()
         return task.done
 
@@ -386,6 +436,7 @@ class LoginScreenMixin:
         def worker():
             result, err = auth_client.login(u, p)
             if result and result.get("ok"):
+                self._sync_avatar_from_server_bg(result["token"], result["username"])
                 self.taskMgr.doMethodLater(
                     0, self._on_login_ok, "_loginOk",
                     extraArgs=[result["token"], result["username"]], appendTask=True,
@@ -408,6 +459,7 @@ class LoginScreenMixin:
             if result and result.get("ok"):
                 result2, err2 = auth_client.login(u, p)
                 if result2 and result2.get("ok"):
+                    self._sync_avatar_from_server_bg(result2["token"], result2["username"])
                     self.taskMgr.doMethodLater(
                         0, self._on_login_ok, "_loginOk",
                         extraArgs=[result2["token"], result2["username"]], appendTask=True,
@@ -428,6 +480,7 @@ class LoginScreenMixin:
         self._session_token    = token
         self._session_username = username
         self._save_token(token, username)
+        self.apply_avatar_colors()
         if self._login_ui:
             self._login_ui.destroy()
             self._login_ui = None
@@ -614,7 +667,7 @@ class LoginScreenMixin:
 
         ROW_H = 0.072
         MED_L = (0.17, 0.19, 0.26, 1.0)
-        PUB_C = (0.14, 0.42, 0.22, 1.0)   # green-ish when published
+        PUB_C = (0.14, 0.42, 0.22, 1.0)
         for i, build in enumerate(builds[:5]):
             y = -(i + 0.5) * ROW_H
             is_pub = bool(build.get("published", 0))
@@ -624,8 +677,8 @@ class LoginScreenMixin:
                 parent=frame, pos=(0, 0, y),
             )
             name = build["name"]
-            if len(name) > 18:
-                name = name[:16] + "…"
+            if len(name) > 16:
+                name = name[:14] + "…"
             ts = datetime.datetime.fromtimestamp(build["updated_at"]).strftime("%b %d")
             DirectLabel(
                 text=f"{name}  {ts}",
@@ -634,35 +687,168 @@ class LoginScreenMixin:
                 frameColor=(0, 0, 0, 0),
                 parent=frame, pos=(-0.70, 0, y - 0.010),
             )
-            # Publish / Unpublish toggle
+            DirectButton(
+                text="Settings",
+                text_fg=TEXT, text_scale=0.022,
+                frameColor=(0.22, 0.22, 0.34, 1.0),
+                frameSize=(-0.058, 0.058, -0.022, 0.022),
+                parent=frame, pos=(0.12, 0, y),
+                command=self._open_game_settings,
+                extraArgs=[build["id"], build["name"]], relief=1,
+            )
             DirectButton(
                 text="Unpub" if is_pub else "Pub",
-                text_fg=TEXT, text_scale=0.026,
+                text_fg=TEXT, text_scale=0.022,
                 frameColor=PUB_C if is_pub else BTN,
-                frameSize=(-0.056, 0.056, -0.022, 0.022),
+                frameSize=(-0.050, 0.050, -0.022, 0.022),
                 parent=frame, pos=(0.30, 0, y),
                 command=self._on_toggle_publish,
                 extraArgs=[build["id"], not is_pub], relief=1,
             )
             DirectButton(
                 text="Load",
-                text_fg=TEXT, text_scale=0.026,
+                text_fg=TEXT, text_scale=0.022,
                 frameColor=SEL,
-                frameSize=(-0.060, 0.060, -0.022, 0.022),
-                parent=frame, pos=(0.48, 0, y),
+                frameSize=(-0.050, 0.050, -0.022, 0.022),
+                parent=frame, pos=(0.46, 0, y),
                 command=self._on_load_build,
                 extraArgs=[build["id"]], relief=1,
             )
             DirectButton(
                 text="Del",
-                text_fg=TEXT, text_scale=0.026,
+                text_fg=TEXT, text_scale=0.022,
                 frameColor=(0.45, 0.14, 0.14, 1.0),
-                frameSize=(-0.048, 0.048, -0.022, 0.022),
-                parent=frame, pos=(0.63, 0, y),
+                frameSize=(-0.044, 0.044, -0.022, 0.022),
+                parent=frame, pos=(0.60, 0, y),
                 command=self._on_delete_build,
                 extraArgs=[build["id"]], relief=1,
             )
         return task.done
+
+    def _open_game_settings(self, build_id, build_name):
+        """Open the game settings popup for thumbnail + description."""
+        existing = getattr(self, "_settings_popup", None)
+        if existing:
+            try:
+                existing.destroy()
+            except Exception:
+                pass
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.80),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=80,
+        )
+        self._settings_popup = overlay
+        card = DirectFrame(
+            frameColor=DARK,
+            frameSize=(-0.72, 0.72, -0.52, 0.52),
+            parent=overlay, sortOrder=81,
+        )
+        DirectLabel(
+            text=f"Game Settings — {build_name[:22]}",
+            text_fg=TEXT, text_scale=0.038,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.40),
+        )
+        # Description label + entry
+        DirectLabel(
+            text="Description",
+            text_fg=TEXT_D, text_scale=0.030,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.48, 0, 0.24),
+        )
+        desc_entry = DirectEntry(
+            text_fg=TEXT, text_scale=0.030,
+            frameColor=MED,
+            width=28, numLines=1,
+            parent=card, pos=(-0.68, 0, 0.16),
+            initialText="",
+        )
+        # Thumbnail path label + entry
+        DirectLabel(
+            text="Thumbnail path (PNG/JPG, 1920×1080)",
+            text_fg=TEXT_D, text_scale=0.026,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.28, 0, 0.04),
+        )
+        thumb_entry = DirectEntry(
+            text_fg=TEXT, text_scale=0.028,
+            frameColor=MED,
+            width=30, numLines=1,
+            parent=card, pos=(-0.68, 0, -0.04),
+            initialText="",
+        )
+        DirectLabel(
+            text="Paste the full file path to your image.",
+            text_fg=TEXT_D, text_scale=0.024,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, -0.14),
+        )
+        self._settings_status = DirectLabel(
+            text="",
+            text_fg=GREEN, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, -0.24),
+        )
+        # Load existing settings in background
+        def _load():
+            res, _ = auth_client.get_game_settings(self._session_token, build_id)
+            if res:
+                def _apply(task, r=res):
+                    if desc_entry and not desc_entry.isEmpty():
+                        desc_entry.set(r.get("description", ""))
+                    return task.done
+                self.taskMgr.doMethodLater(0, _apply, "_applySettings", appendTask=True)
+        threading.Thread(target=_load, daemon=True).start()
+
+        def _save():
+            desc_text  = desc_entry.get().strip()
+            thumb_path = thumb_entry.get().strip()
+            thumb_b64  = ""
+            if thumb_path:
+                try:
+                    import base64
+                    with open(thumb_path, "rb") as f:
+                        thumb_b64 = base64.b64encode(f.read()).decode()
+                except Exception as e:
+                    lbl = self._settings_status
+                    if lbl and not lbl.isEmpty():
+                        lbl["text"] = f"Image error: {e}"
+                        lbl["text_fg"] = RED
+                    return
+            lbl = self._settings_status
+            if lbl and not lbl.isEmpty():
+                lbl["text"] = "Saving…"
+                lbl["text_fg"] = TEXT_D
+            def worker():
+                res, err = auth_client.put_game_settings(
+                    self._session_token, build_id, thumb_b64, desc_text)
+                def _done(task, ok=(res is not None), err=err):
+                    l = getattr(self, "_settings_status", None)
+                    if l and not l.isEmpty():
+                        l["text"] = "Saved!" if ok else f"Error: {err}"
+                        l["text_fg"] = GREEN if ok else RED
+                    return task.done
+                self.taskMgr.doMethodLater(0, _done, "_settingsDone", appendTask=True)
+            threading.Thread(target=worker, daemon=True).start()
+
+        DirectButton(
+            text="Save",
+            text_fg=TEXT, text_scale=0.036,
+            frameColor=SEL,
+            frameSize=(-0.14, 0.14, -0.036, 0.036),
+            parent=card, pos=(-0.22, 0, -0.38),
+            command=_save, relief=1,
+        )
+        DirectButton(
+            text="Cancel",
+            text_fg=TEXT_D, text_scale=0.034,
+            frameColor=BTN,
+            frameSize=(-0.12, 0.12, -0.034, 0.034),
+            parent=card, pos=(0.24, 0, -0.38),
+            command=lambda: [overlay.destroy(), setattr(self, "_settings_popup", None)],
+            relief=1,
+        )
 
     def _on_toggle_publish(self, build_id, new_state):
         token = self._session_token
@@ -708,75 +894,111 @@ class LoginScreenMixin:
     def _build_browse_screen(self):
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
+        self._browse_page       = 0
+        self._browse_all_builds = []
+        self._game_popup        = None
 
-        bg = DirectFrame(frameColor=DARKER, frameSize=(-3, 3, -3, 3))
+        bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
 
-        card = DirectFrame(
-            frameColor=DARK,
-            frameSize=(-0.78, 0.78, -0.62, 0.60),
-            parent=bg,
+        # ── Top nav bar ────────────────────────────────────────────────────
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=bg, pos=(0, 0, 0.908),
         )
         DirectLabel(
             text="PhoenixHill",
-            text_fg=TEXT, text_scale=0.070,
+            text_fg=_RS_WHITE, text_scale=0.044,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, 0.46),
+            parent=nav, pos=(-1.84, 0, -0.018),
         )
+        for i, (tab_text, tab_cmd) in enumerate([
+            ("Games",  self._build_browse_screen),
+            ("Avatar", self._build_avatar_screen),
+            ("Build",  self._build_main_menu),
+        ]):
+            is_active = (i == 0)
+            DirectButton(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.034,
+                frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
+                frameSize=(-0.10, 0.10, -0.052, 0.052),
+                parent=nav, pos=(-0.88 + i * 0.34, 0, -0.008),
+                relief=1 if is_active else 0,
+                command=tab_cmd,
+            )
         DirectLabel(
-            text=f"Logged in as {self._session_username}",
-            text_fg=TEXT_D, text_scale=0.030,
+            text=self._session_username or "",
+            text_fg=_RS_GRAY, text_scale=0.028,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, 0.34),
-        )
-        DirectButton(
-            text="Refresh",
-            text_fg=TEXT_D, text_scale=0.030,
-            frameColor=BTN,
-            frameSize=(-0.090, 0.090, -0.026, 0.026),
-            parent=card, pos=(0.64, 0, 0.34),
-            command=self._build_browse_screen, relief=1,
-        )
-        self._browse_list_frame = DirectFrame(
-            frameColor=(0, 0, 0, 0),
-            frameSize=(-0.74, 0.74, -0.40, 0),
-            parent=card, pos=(0, 0, 0.28),
-        )
-        DirectLabel(
-            text="Loading…",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=(0, 0, 0, 0),
-            parent=self._browse_list_frame, pos=(0, 0, -0.06),
-        )
-
-        # Bottom nav
-        DirectButton(
-            text="My Builds",
-            text_fg=TEXT, text_scale=0.038,
-            frameColor=BTN,
-            frameSize=(-0.16, 0.16, -0.036, 0.036),
-            parent=card, pos=(-0.44, 0, -0.50),
-            command=self._build_main_menu, relief=1,
-        )
-        DirectButton(
-            text="New Build",
-            text_fg=TEXT, text_scale=0.038,
-            frameColor=SEL,
-            frameSize=(-0.16, 0.16, -0.036, 0.036),
-            parent=card, pos=(0, 0, -0.50),
-            command=self._enter_studio, relief=1,
+            parent=nav, pos=(1.52, 0, -0.014),
         )
         DirectButton(
             text="Log Out",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=BTN,
-            frameSize=(-0.14, 0.14, -0.032, 0.032),
-            parent=card, pos=(0.44, 0, -0.50),
-            command=self._do_logout, relief=1,
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.082, 0.082, -0.026, 0.026),
+            parent=nav, pos=(1.84, 0, -0.014),
+            relief=1, command=self._do_logout,
+        )
+
+        # ── Section header ─────────────────────────────────────────────────
+        DirectLabel(
+            text="Popular",
+            text_fg=_RS_WHITE, text_scale=0.038,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(-1.62, 0, 0.757),
+        )
+        DirectButton(
+            text="Refresh",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            frameColor=_RS_NAV,
+            frameSize=(-0.080, 0.080, -0.026, 0.026),
+            parent=bg, pos=(1.65, 0, 0.757),
+            relief=1, command=self._build_browse_screen,
+        )
+
+        # ── Game grid container ────────────────────────────────────────────
+        self._game_grid_parent = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-2.0, 2.0, -1.80, 0.72),
+            parent=bg,
+        )
+        DirectLabel(
+            text="Loading…",
+            text_fg=_RS_GRAY, text_scale=0.040,
+            frameColor=(0, 0, 0, 0),
+            parent=self._game_grid_parent, pos=(0, 0, 0),
+        )
+
+        # ── Pagination ─────────────────────────────────────────────────────
+        self._prev_page_btn = DirectButton(
+            text="◄",
+            text_fg=_RS_WHITE, text_scale=0.038,
+            frameColor=_RS_NAV,
+            frameSize=(-0.052, 0.052, -0.034, 0.034),
+            parent=bg, pos=(-0.20, 0, -0.913),
+            relief=1, command=self._browse_prev_page,
+        )
+        self._page_lbl = DirectLabel(
+            text="Page 1",
+            text_fg=_RS_GRAY, text_scale=0.030,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(0, 0, -0.913),
+        )
+        self._next_page_btn = DirectButton(
+            text="►",
+            text_fg=_RS_WHITE, text_scale=0.038,
+            frameColor=_RS_NAV,
+            frameSize=(-0.052, 0.052, -0.034, 0.034),
+            parent=bg, pos=(0.20, 0, -0.913),
+            relief=1, command=self._browse_next_page,
         )
 
         threading.Thread(target=self._fetch_browse_thread, daemon=True).start()
-        self.taskMgr.doMethodLater(6, self._browse_auto_refresh, "_browseAutoRefresh",
+        self.taskMgr.doMethodLater(10, self._browse_auto_refresh, "_browseAutoRefresh",
                                    appendTask=True)
 
     def _browse_auto_refresh(self, task):
@@ -799,68 +1021,324 @@ class LoginScreenMixin:
         )
 
     def _populate_browse_list(self, builds, err, task):
-        frame = getattr(self, "_browse_list_frame", None)
+        frame = getattr(self, "_game_grid_parent", None)
         if not frame or frame.isEmpty():
-            return task.done  # browse screen was navigated away from before fetch finished
+            return task.done
+        for child in frame.getChildren():
+            child.removeNode()
+        if not builds:
+            DirectLabel(
+                text="No published games yet." if not err else f"Error: {err}",
+                text_fg=_RS_GRAY, text_scale=0.036,
+                frameColor=(0, 0, 0, 0),
+                parent=frame, pos=(0, 0, 0),
+            )
+            return task.done
+        self._browse_all_builds = builds
+        self._browse_page = 0
+        self._draw_game_grid()
+        return task.done
+
+    def _draw_game_grid(self):
+        frame = getattr(self, "_game_grid_parent", None)
+        if not frame or frame.isEmpty():
+            return
         for child in frame.getChildren():
             child.removeNode()
 
-        if not builds:
-            DirectLabel(
-                text="No published builds yet." if not err else f"Error: {err}",
-                text_fg=TEXT_D, text_scale=0.034,
-                frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(0, 0, -0.06),
-            )
-            return task.done
+        page   = getattr(self, "_browse_page", 0)
+        builds = getattr(self, "_browse_all_builds", [])
+        shown  = builds[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
-        ROW_H = 0.078
-        MED_L = (0.17, 0.19, 0.26, 1.0)
-        LIVE  = (0.20, 0.55, 0.28, 1.0)   # green tint for rows with players
-        for i, build in enumerate(builds[:5]):
-            online = build.get("online", 0)
-            y = -(i + 0.5) * ROW_H
-            DirectFrame(
-                frameColor=LIVE if online else MED_L,
-                frameSize=(-0.74, 0.74, -ROW_H / 2, ROW_H / 2),
-                parent=frame, pos=(0, 0, y),
-            )
-            name = build["name"]
-            if len(name) > 20:
-                name = name[:18] + "…"
+        if not shown:
             DirectLabel(
-                text=name,
-                text_fg=TEXT, text_scale=0.030,
+                text="No games here.",
+                text_fg=_RS_GRAY, text_scale=0.036,
+                frameColor=(0, 0, 0, 0),
+                parent=frame, pos=(0, 0, 0),
+            )
+        else:
+            total_w  = _GRID_COLS * _CARD_W + (_GRID_COLS - 1) * _CARD_GAP_X
+            left_cx  = -total_w / 2 + _CARD_W / 2
+            GRID_TOP = 0.62
+            THUMB_CY = _CARD_H / 2 - _CARD_TH / 2        # thumbnail center (card-local z)
+            NAME_Y   = _CARD_H / 2 - _CARD_TH - 0.042    # name label z (card-local)
+            SUB_Y    = -_CARD_H / 2 + 0.042               # creator/count z (card-local)
+
+            for idx, build in enumerate(shown):
+                col   = idx % _GRID_COLS
+                row   = idx // _GRID_COLS
+                cx    = left_cx + col * (_CARD_W + _CARD_GAP_X)
+                cy    = GRID_TOP - _CARD_H / 2 - row * (_CARD_H + _CARD_GAP_Y)
+                tint  = _THUMB_TINTS[build.get("id", idx) % len(_THUMB_TINTS)]
+                online = build.get("online", 0)
+                name   = build["name"]
+                short  = (name[:12] + "…") if len(name) > 14 else name
+
+                card = DirectButton(
+                    frameColor=_RS_CARD,
+                    frameSize=(-_CARD_W/2, _CARD_W/2, -_CARD_H/2, _CARD_H/2),
+                    parent=frame, pos=(cx, 0, cy),
+                    relief=1,
+                    command=self._show_game_info_popup,
+                    extraArgs=[build],
+                )
+                # Thumbnail fill
+                card_thumb = DirectFrame(
+                    frameColor=tint,
+                    frameSize=(-_CARD_W/2, _CARD_W/2, -_CARD_TH/2, _CARD_TH/2),
+                    parent=card, pos=(0, 0, THUMB_CY),
+                    sortOrder=1,
+                )
+                if build.get("thumbnail"):
+                    self._apply_thumbnail_texture(card_thumb, build["thumbnail"])
+                # Faint watermark only when no real thumbnail
+                if not build.get("thumbnail"):
+                    DirectLabel(
+                        text=short,
+                        text_fg=(1, 1, 1, 0.18), text_scale=0.040,
+                        frameColor=(0, 0, 0, 0),
+                        parent=card, pos=(0, 0, THUMB_CY),
+                        sortOrder=2,
+                    )
+                # Game name below thumbnail
+                DirectLabel(
+                    text=short,
+                    text_fg=_RS_WHITE, text_scale=0.026,
+                    text_align=TextNode.ALeft,
+                    frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(-_CARD_W/2 + 0.026, 0, NAME_Y),
+                    sortOrder=2,
+                )
+                # Creator
+                creator = build.get("username", "")
+                if len(creator) > 10:
+                    creator = creator[:9] + "…"
+                DirectLabel(
+                    text=f"by {creator}",
+                    text_fg=_RS_GRAY, text_scale=0.020,
+                    text_align=TextNode.ALeft,
+                    frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(-_CARD_W/2 + 0.026, 0, SUB_Y),
+                    sortOrder=2,
+                )
+                # Online count dot
+                count_col = _RS_GREEN if online else (_RS_GRAY[0], _RS_GRAY[1], _RS_GRAY[2], 0.5)
+                DirectLabel(
+                    text=f"● {online}" if online else "●",
+                    text_fg=count_col, text_scale=0.020,
+                    text_align=TextNode.ARight,
+                    frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(_CARD_W/2 - 0.026, 0, SUB_Y),
+                    sortOrder=2,
+                )
+
+        # Update pagination label
+        total_pages = max(1, (len(builds) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        lbl = getattr(self, "_page_lbl", None)
+        if lbl and not lbl.isEmpty():
+            lbl["text"] = f"Page {page + 1}"
+
+    def _browse_prev_page(self):
+        if getattr(self, "_browse_page", 0) > 0:
+            self._browse_page -= 1
+            self._draw_game_grid()
+
+    def _browse_next_page(self):
+        builds = getattr(self, "_browse_all_builds", [])
+        total  = max(1, (len(builds) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        if getattr(self, "_browse_page", 0) < total - 1:
+            self._browse_page += 1
+            self._draw_game_grid()
+
+    def _show_game_info_popup(self, build):
+        self._close_game_info_popup()
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.82),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=60,
+        )
+        self._game_popup = overlay
+
+        tint = _THUMB_TINTS[build.get("id", 0) % len(_THUMB_TINTS)]
+        HW, HH = 1.08, 0.64
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-HW, HW, -HH, HH),
+            parent=overlay, sortOrder=61,
+        )
+        # Close button
+        DirectButton(
+            text="✕",
+            text_fg=_RS_WHITE, text_scale=0.036,
+            frameColor=_RS_RED,
+            frameSize=(-0.038, 0.038, -0.038, 0.038),
+            parent=card, pos=(HW - 0.056, 0, HH - 0.056),
+            relief=1, command=self._close_game_info_popup,
+        )
+
+        # Left column — thumbnail + play buttons
+        TH_W  = 0.94
+        TH_H  = TH_W * 9 / 16   # ≈ 0.529
+        TH_CX = -HW + TH_W / 2 + 0.08
+        TH_CY = HH / 2 + 0.02
+        thumb_frame = DirectFrame(
+            frameColor=tint,
+            frameSize=(-TH_W/2, TH_W/2, -TH_H/2, TH_H/2),
+            parent=card, pos=(TH_CX, 0, TH_CY),
+        )
+        if build.get("thumbnail"):
+            self._apply_thumbnail_texture(thumb_frame, build["thumbnail"])
+        PLAY_Y = TH_CY - TH_H / 2 - 0.080
+        DirectButton(
+            text="▶  Play",
+            text_fg=_RS_WHITE, text_scale=0.040,
+            frameColor=_RS_ORANGE,
+            frameSize=(-TH_W/2, TH_W/2, -0.054, 0.054),
+            parent=card, pos=(TH_CX, 0, PLAY_Y),
+            relief=1,
+            command=self._popup_play,
+            extraArgs=[build["id"]],
+        )
+        DirectButton(
+            text="Play Solo",
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=_RS_BORDER,
+            frameSize=(-TH_W/4, TH_W/4, -0.030, 0.030),
+            parent=card, pos=(TH_CX, 0, PLAY_Y - 0.100),
+            relief=1,
+            command=self._popup_play_solo,
+            extraArgs=[build["id"]],
+        )
+
+        # Right column — info
+        RX = 0.16
+        title = build["name"]
+        if len(title) > 24:
+            title = title[:22] + "…"
+        DirectLabel(
+            text=title,
+            text_fg=_RS_WHITE, text_scale=0.044,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(RX, 0, HH - 0.14),
+        )
+        import datetime
+        updated_str = datetime.datetime.fromtimestamp(
+            build.get("updated_at", 0)).strftime("%b %d %Y")
+        online  = build.get("online", 0)
+        visits  = build.get("visits") or 0
+        desc    = (build.get("description") or "").strip()
+        info_rows = [
+            ("Creator:", build.get("username", "?")),
+            ("Updated:", updated_str),
+            ("Visits:",  str(visits)),
+            ("Players:", f"{online} online" if online else "Empty"),
+        ]
+        for i, (label, value) in enumerate(info_rows):
+            y = HH - 0.32 - i * 0.12
+            DirectLabel(
+                text=label,
+                text_fg=_RS_GRAY, text_scale=0.026,
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(-0.70, 0, y + 0.004),
+                parent=card, pos=(RX, 0, y),
             )
             DirectLabel(
-                text=f"by {build['username']}",
-                text_fg=TEXT_D, text_scale=0.026,
+                text=value,
+                text_fg=_RS_WHITE, text_scale=0.028,
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(-0.70, 0, y - 0.024),
+                parent=card, pos=(RX + 0.22, 0, y),
             )
-            # Player count badge
-            count_text = f"{online} online" if online else "empty"
-            count_color = (0.55, 1.0, 0.65, 1) if online else (0.45, 0.47, 0.55, 1)
+        if desc:
+            desc_short = (desc[:80] + "…") if len(desc) > 80 else desc
             DirectLabel(
-                text=count_text,
-                text_fg=count_color, text_scale=0.026,
-                text_align=TextNode.ARight,
+                text=desc_short,
+                text_fg=_RS_GRAY, text_scale=0.024,
+                text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(0.42, 0, y),
+                parent=card, pos=(RX, 0, HH - 0.32 - len(info_rows) * 0.12 - 0.06),
             )
-            DirectButton(
-                text="Play",
-                text_fg=TEXT, text_scale=0.030,
-                frameColor=(0.14, 0.42, 0.22, 1.0),
-                frameSize=(-0.070, 0.070, -0.026, 0.026),
-                parent=frame, pos=(0.60, 0, y),
-                command=self._on_play_published,
-                extraArgs=[build["id"]], relief=1,
-            )
+
+    def _apply_thumbnail_texture(self, frame_np, b64_data):
+        """Decode a base64 image and apply it as a texture to a DirectFrame NodePath."""
+        try:
+            import base64, tempfile, os
+            from panda3d.core import Filename
+            raw = base64.b64decode(b64_data)
+            suffix = ".jpg" if raw[:3] == b'\xff\xd8\xff' else ".png"
+            tmp = tempfile.mktemp(suffix=suffix)
+            with open(tmp, "wb") as f:
+                f.write(raw)
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            if tex:
+                frame_np.setTexture(tex, 1)
+                frame_np["frameColor"] = (1, 1, 1, 1)
+        except Exception as e:
+            print(f"[THUMB] load error: {e}")
+
+    def _close_game_info_popup(self):
+        popup = getattr(self, "_game_popup", None)
+        if popup:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+        self._game_popup = None
+
+    def _popup_play(self, build_id):
+        self._close_game_info_popup()
+        self._on_play_published(build_id)
+
+    def _popup_play_solo(self, build_id):
+        self._close_game_info_popup()
+        if getattr(self, "_entering_play_mode", False):
+            return
+        self._entering_play_mode = True
+        def worker():
+            result, err = auth_client.get_published_build(build_id)
+            if result and result.get("ok"):
+                self.taskMgr.doMethodLater(
+                    0, self._do_enter_play_mode_solo, "_enterPlayModeSolo",
+                    extraArgs=[result["id"], result["name"], result["data"]],
+                    appendTask=True,
+                )
+            else:
+                self._entering_play_mode = False
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _do_enter_play_mode_solo(self, build_id, name, data_str, task):
+        if self._main_menu_ui:
+            self._main_menu_ui.destroy()
+            self._main_menu_ui = None
+        self._is_play_only     = True
+        self._cloud_build_id   = None
+        self._cloud_build_name = None
+        self._show_studio_ui()
+        for attr in ("exit_button", "insert_brick_button", "move_button",
+                     "scale_button", "export_button", "import_button",
+                     "cloud_save_button"):
+            btn = getattr(self, attr, None)
+            if btn:
+                btn.hide()
+        self.is_playtest = True
+        self._panel.hide()
+        self.character.show()
+        try:
+            self._load_bricks_from_data(json.loads(data_str))
+        except Exception as e:
+            print("Solo load error:", e)
+        self.spawn_unstuck()
+        self.cam_distance = 20
+        self.cam_angle.set(0, 20)
+        self.camLens.setFov(60)
+        self.updateCamera()
+        self._entering_play_mode = False
         return task.done
 
     def _on_play_published(self, build_id):

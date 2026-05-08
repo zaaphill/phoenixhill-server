@@ -71,3 +71,20 @@ def get_published_build(build_id):
 
 def get_rooms():
     return _request("GET", "/api/rooms")
+
+def get_avatar(token):
+    return _request("GET", "/api/avatar", params={"token": token})
+
+def put_avatar(token, colors):
+    return _request("PUT", "/api/avatar", {"colors": colors}, params={"token": token})
+
+def get_server_version():
+    return _request("GET", "/api/server_version")
+
+def get_game_settings(token, build_id):
+    return _request("GET", f"/api/builds/{build_id}/settings", params={"token": token})
+
+def put_game_settings(token, build_id, thumbnail, description):
+    return _request("PUT", f"/api/builds/{build_id}/settings",
+                    {"thumbnail": thumbnail, "description": description},
+                    params={"token": token})
