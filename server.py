@@ -3,7 +3,7 @@ PhoenixHill auth server
 Run with:  python server.py
 Requires:  pip install fastapi uvicorn
 """
-import asyncio, hashlib, os, secrets, sqlite3, time, traceback, uuid
+import asyncio, hashlib, json, os, secrets, sqlite3, time, traceback, uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +15,10 @@ import uvicorn
 # download the new exe and swap it in on next exit.
 GAME_VERSION      = "1.0"
 GAME_DOWNLOAD_URL = ""   # paste direct .exe download link here after uploading
+
+# Bump this whenever the WebSocket protocol or any critical API changes.
+# The game client checks this on startup and restarts the local server if outdated.
+_SERVER_API_VERSION = 4
 
 # build_id -> {player_id -> {ws, username, x, y, z, h}}
 _rooms: dict = {}
@@ -69,6 +73,10 @@ def _init_db():
         c.execute("ALTER TABLE builds ADD COLUMN published INTEGER DEFAULT 0")
     except Exception:
         pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN avatar_colors TEXT")
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -90,6 +98,9 @@ class BuildBody(BaseModel):
 
 class PublishBody(BaseModel):
     published: bool
+
+class AvatarBody(BaseModel):
+    colors: dict
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -168,6 +179,11 @@ def verify(token: str):
 @app.get("/api/version")
 def get_version():
     return {"version": GAME_VERSION, "url": GAME_DOWNLOAD_URL}
+
+
+@app.get("/api/server_version")
+def get_server_version():
+    return {"api_version": _SERVER_API_VERSION}
 
 
 @app.delete("/api/logout")
@@ -273,6 +289,28 @@ def browse_published():
     return {"builds": [dict(r) for r in rows]}
 
 
+@app.get("/api/avatar")
+def get_avatar(token: str):
+    sess = _get_session(token)
+    c = _db()
+    row = c.execute("SELECT avatar_colors FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+    c.close()
+    if not row or not row["avatar_colors"]:
+        return {"colors": {}}
+    return {"colors": json.loads(row["avatar_colors"])}
+
+
+@app.put("/api/avatar")
+def put_avatar(token: str, b: AvatarBody):
+    sess = _get_session(token)
+    c = _db()
+    c.execute("UPDATE users SET avatar_colors=? WHERE id=?",
+              (json.dumps(b.colors), sess["user_id"]))
+    c.commit()
+    c.close()
+    return {"ok": True}
+
+
 @app.get("/api/rooms")
 def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
@@ -328,6 +366,16 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     username  = sess["username"]
     print(f"[WS] {username} authenticated (room {build_id})", flush=True)
 
+    # Load colors from DB — guaranteed up-to-date (pushed on every color pick + on login).
+    try:
+        uc = _db()
+        urow = uc.execute("SELECT avatar_colors FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+        uc.close()
+        player_colors = json.loads(urow["avatar_colors"]) if urow and urow["avatar_colors"] else {}
+    except Exception:
+        player_colors = {}
+    print(f"[WS_CONNECT_PARSED] username={username} colors={'yes' if player_colors else 'none'}", flush=True)
+
     # Evict stale same-username connections.
     # We are NOT in _rooms yet, so no other player's broadcast can write to our
     # socket concurrently during the yields inside this loop.
@@ -350,17 +398,24 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # state send has exactly one writer — us.  Adding first then sending is
     # the classic concurrent-write bug: another player's 20 Hz move broadcast
     # yields into our state send and corrupts the frame → 1005.
+    print(f"[STATE_BUILD] room_before_snapshot={{{', '.join(f'{p}: {dict((k,v) for k,v in d.items() if k!=\"websocket\")}' for p,d in _rooms.get(build_id,{}).items())}}}", flush=True)
     try:
         others = {
-            pid: {k: v for k, v in d.items() if k != "websocket"}
+            pid: {
+                "username": d.get("username", ""),
+                "x":        d.get("x", 0.0),
+                "y":        d.get("y", 0.0),
+                "z":        d.get("z", 0.0),
+                "h":        d.get("h", 0.0),
+                "colors":   d.get("colors") or {},
+            }
             for pid, d in _rooms.get(build_id, {}).items()
         }
     except Exception as _e:
         print(f"[WS] {username}: state snapshot FAILED: {_e}", flush=True)
         traceback.print_exc()
         return
-
-    print(f"[WS] {username} joined room {build_id}. Others: {[d['username'] for d in others.values()]} payload={others}", flush=True)
+    print(f"[STATE_PAYLOAD] {username} -> {json.dumps({'type': 'state', 'players': others})}", flush=True)
     try:
         await websocket.send_json({"type": "state", "players": others})
         print(f"[WS] {username}: state sent OK", flush=True)
@@ -373,11 +428,14 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     _rooms.setdefault(build_id, {})[player_id] = {
         "websocket": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
+        "colors": player_colors,
     }
-    print(f"[WS] {username}: added to room, broadcasting joined", flush=True)
+    _entry_log = {k: v for k, v in _rooms[build_id][player_id].items() if k != "websocket"}
+    print(f"[ROOM_STORE] {username}: {_entry_log}", flush=True)
     try:
         await _broadcast(build_id, {
             "type": "joined", "player_id": player_id, "username": username,
+            "colors": player_colors,
         }, exclude=player_id)
         print(f"[WS] {username}: joined broadcast done", flush=True)
     except Exception as _e:
@@ -417,6 +475,23 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     "x": msg.get("x", 0.0), "y": msg.get("y", 0.0),
                     "z": msg.get("z", 0.0), "h": msg.get("h", 0.0),
                 }, exclude=player_id)
+            elif msg.get("type") == "avatar_colors":
+                try:
+                    colors = msg.get("colors")
+                    print(f"[WS_AVATAR_MSG] from={username}/{player_id} msg={msg}", flush=True)
+                    print(f"[WS_RELAY] {username} avatar_colors -> room {build_id} has_colors={bool(colors)} keys={list(colors.keys()) if isinstance(colors, dict) else None}", flush=True)
+                    if isinstance(colors, dict):
+                        entry = _rooms.get(build_id, {}).get(player_id)
+                        if entry:
+                            entry["colors"] = colors
+                        await _broadcast(build_id, {
+                            "type": "avatar_colors",
+                            "player_id": player_id,
+                            "colors": colors,
+                        }, exclude=player_id)
+                except Exception as _ace:
+                    print(f"[AVATAR_COLORS_CRASH] {username}: {repr(_ace)}", flush=True)
+                    traceback.print_exc()
             elif msg.get("type") == "chat":
                 text = str(msg.get("text", ""))[:200]
                 await _broadcast(build_id, {
@@ -428,8 +503,8 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     except WebSocketDisconnect as _wd:
         code = getattr(_wd, "code", "?")
         print(f"[WS] {username}: clean disconnect (code={code}, room {build_id})", flush=True)
-    except Exception as _e:
-        print(f"[WS] {username}: recv loop error: {_e} (room {build_id})", flush=True)
+    except Exception as _fatal:
+        print(f"[WS_FATAL] {username} room={build_id}: {repr(_fatal)}", flush=True)
         traceback.print_exc()
     finally:
         # Identity-safe cleanup: only remove and broadcast if our websocket
