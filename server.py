@@ -9,6 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
+# ── Auto-update ───────────────────────────────────────────────────────────────
+# Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
+# Old clients check this on startup; if their version differs they silently
+# download the new exe and swap it in on next exit.
+GAME_VERSION      = "1.0"
+GAME_DOWNLOAD_URL = ""   # paste direct .exe download link here after uploading
+
 # build_id -> {player_id -> {ws, username, x, y, z, h}}
 _rooms: dict = {}
 
@@ -156,6 +163,11 @@ def verify(token: str):
     if not row:
         raise HTTPException(401, "Session expired or invalid")
     return {"ok": True, "username": row["username"]}
+
+
+@app.get("/api/version")
+def get_version():
+    return {"version": GAME_VERSION, "url": GAME_DOWNLOAD_URL}
 
 
 @app.delete("/api/logout")
