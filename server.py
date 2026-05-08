@@ -288,7 +288,7 @@ async def _broadcast(build_id: int, msg: dict, exclude: str = None):
         if pid == exclude:
             continue
         try:
-            await pdata["ws"].send_json(msg)
+            await pdata["websocket"].send_json(msg)
         except Exception:
             dead.append(pid)
     for pid in dead:
@@ -327,8 +327,8 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         print(f"[WS] kicked old session for {username} ({spid})", flush=True)
         if old_data:
             try:
-                await old_data["ws"].send_json({"type": "kicked", "reason": "duplicate"})
-                await old_data["ws"].close(code=4009)
+                await old_data["websocket"].send_json({"type": "kicked", "reason": "duplicate"})
+                await old_data["websocket"].close(code=4009)
             except Exception:
                 pass
         await _broadcast(build_id, {"type": "left", "player_id": spid})
@@ -340,7 +340,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # yields into our state send and corrupts the frame → 1005.
     try:
         others = {
-            pid: {k: v for k, v in d.items() if k != "ws"}
+            pid: {k: v for k, v in d.items() if k != "websocket"}
             for pid, d in _rooms.get(build_id, {}).items()
         }
     except Exception as _e:
@@ -359,7 +359,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
 
     # Now enter the room and announce — from this point others will write to us.
     _rooms.setdefault(build_id, {})[player_id] = {
-        "ws": websocket, "username": username,
+        "websocket": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
     }
     print(f"[WS] {username}: added to room, broadcasting joined", flush=True)
@@ -420,17 +420,21 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         print(f"[WS] {username}: recv loop error: {_e} (room {build_id})", flush=True)
         traceback.print_exc()
     finally:
-        # Check BEFORE popping — if already absent, we were evicted and our
-        # "left" was already broadcast by the eviction code.  Skipping the
-        # broadcast here prevents a concurrent write to a new connection's
-        # WebSocket (which causes the 1005 reconnect loop).
-        was_present = player_id in _rooms.get(build_id, {})
-        _rooms.get(build_id, {}).pop(player_id, None)
-        if build_id in _rooms and not _rooms[build_id]:
-            del _rooms[build_id]
-        print(f"[WS] {username} left room {build_id} (was_present={was_present})", flush=True)
-        if was_present:
+        # Identity-safe cleanup: only remove and broadcast if our websocket
+        # object is still the active session.  During map switching a new
+        # connection can evict us and replace our player_id entry before this
+        # finally block runs; blindly popping would delete the new entry and
+        # the new player would never appear to other clients.
+        room    = _rooms.get(build_id, {})
+        current = room.get(player_id)
+        if current and current.get("websocket") is websocket:
+            room.pop(player_id, None)
+            if build_id in _rooms and not _rooms[build_id]:
+                del _rooms[build_id]
+            print(f"[WS] {username} removed from room {build_id}", flush=True)
             await _broadcast(build_id, {"type": "left", "player_id": player_id})
+        else:
+            print(f"[WS] {username}: skipped stale cleanup for {player_id} (already evicted)", flush=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
