@@ -25,11 +25,14 @@ _WALK_SPEED = 10.0
 _LERP       = 18.0   # interpolation factor — higher = snappier catch-up
 _MAX_CHAT   = 8      # chat lines shown
 _CHAT_PNL_W = 0.88   # chat panel width (units in aspect2d)
-_CHAT_HDR_H = 0.044  # header / toggle bar height
 _CHAT_PNL_H = 0.30   # message area height
 _INPUT_H    = 0.058  # chat input bar height
 _LB_W       = 0.32   # leaderboard panel width
 _CHAT_TOP   = -0.10  # z from a2dTopLeft — sits just below the toolbar (TH=0.09)
+# Toolbar-button style constants (must match ui.py BTN / TEXT / TH)
+_TB_COLOR   = (0.19, 0.21, 0.29, 1.0)
+_TB_TEXT    = (0.88, 0.90, 0.95, 1.0)
+_TB_BZ      = -0.045  # -TH/2 = vertical centre of the top bar
 
 
 class MultiplayerMixin:
@@ -538,7 +541,7 @@ class MultiplayerMixin:
             frameColor=(0, 0, 0, 0.55),
             frameSize=(-_LB_W, 0, -h, 0),
             parent=base.a2dTopRight,
-            pos=(-0.04, 0, -0.14),
+            pos=(-0.04, 0, -0.12),
             sortOrder=55,
         )
         DirectLabel(
@@ -579,28 +582,26 @@ class MultiplayerMixin:
         self._chat_input_active = False
         self._chat_visible      = True
 
-        # Header bar (full panel width) — doubles as the toggle button,
-        # sits just below the toolbar so it never overlaps the Menu button.
+        # Chat toggle button lives in the top toolbar (same style as Menu/Edit).
+        # Placed at x=0.195, between Menu and the Edit button.
         self._chat_toggle_btn = DirectButton(
-            text="  Chat",
-            text_fg=(1, 1, 1, 0.90),
-            text_scale=0.032,
-            text_align=TextNode.ALeft,
-            frameColor=(0.12, 0.14, 0.20, 0.95),
-            frameSize=(0, _CHAT_PNL_W, -_CHAT_HDR_H, 0),
-            parent=base.a2dTopLeft,
-            pos=(0.04, 0, _CHAT_TOP),
-            sortOrder=55,
+            text="Chat",
+            text_fg=_TB_TEXT,
+            text_scale=0.040,
+            frameColor=_TB_COLOR,
+            frameSize=(-0.055, 0.055, -0.032, 0.032),
+            parent=self._top_bg,
+            pos=(0.195, 0, _TB_BZ),
             relief=1,
             command=self._toggle_chat,
         )
 
-        # Message area — directly below the header
+        # Message area — just below the toolbar
         self._chat_panel = DirectFrame(
             frameColor=(0, 0, 0, 0.50),
             frameSize=(0, _CHAT_PNL_W, -_CHAT_PNL_H, 0),
             parent=base.a2dTopLeft,
-            pos=(0.04, 0, _CHAT_TOP - _CHAT_HDR_H),
+            pos=(0.04, 0, _CHAT_TOP),
             sortOrder=50,
         )
         self._chat_labels = []
@@ -617,12 +618,11 @@ class MultiplayerMixin:
             self._chat_labels.append(lbl)
 
         # Input bar — click anywhere on it to start typing
-        _input_z = _CHAT_TOP - _CHAT_HDR_H - _CHAT_PNL_H
         self._chat_input_frame = DirectFrame(
             frameColor=(0, 0, 0, 0.68),
             frameSize=(0, _CHAT_PNL_W, -_INPUT_H, 0),
             parent=base.a2dTopLeft,
-            pos=(0.04, 0, _input_z),
+            pos=(0.04, 0, _CHAT_TOP - _CHAT_PNL_H),
             sortOrder=51,
         )
         self._chat_placeholder = DirectLabel(

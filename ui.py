@@ -64,9 +64,10 @@ class UIMixin:
                   frameColor=BTN, relief=1)
 
         BZ = -TH / 2   # vertical center of the bar in top-bar local space
-        # Positions computed so every button has exactly 0.015 gap to its neighbour.
-        # Menu(0.110w) | Edit(0.150w) | +Brick(0.150w) | Move(0.120w) |
-        # Scale(0.120w) | Export(0.130w) | Import(0.130w) | Save(0.110w)
+        # Positions with 0.015 gap between neighbours.
+        # Menu(0.110w) | [Chat added by multiplayer at 0.195] | Edit(0.150w) |
+        # +Brick(0.150w) | Move(0.120w) | Scale(0.120w) | Export(0.130w) |
+        # Import(0.130w) | Save(0.110w)
         self.menu_button = DirectButton(
             text="Menu",
             frameSize=(-0.055, 0.055, -0.032, 0.032),
@@ -77,49 +78,49 @@ class UIMixin:
         self.exit_button = DirectButton(
             text="Edit",
             frameSize=(-0.075, 0.075, -0.032, 0.032),
-            pos=(0.215, 0, BZ),
+            pos=(0.340, 0, BZ),
             command=self.toggle_mode,
             **kw,
         )
         self.insert_brick_button = DirectButton(
             text="+ Brick",
             frameSize=(-0.075, 0.075, -0.032, 0.032),
-            pos=(0.380, 0, BZ),
+            pos=(0.505, 0, BZ),
             command=self.insert_brick,
             **kw,
         )
         self.move_button = DirectButton(
             text="Move",
             frameSize=(-0.060, 0.060, -0.032, 0.032),
-            pos=(0.530, 0, BZ),
+            pos=(0.655, 0, BZ),
             command=self.toggle_move_mode,
             **kw,
         )
         self.scale_button = DirectButton(
             text="Scale",
             frameSize=(-0.060, 0.060, -0.032, 0.032),
-            pos=(0.665, 0, BZ),
+            pos=(0.790, 0, BZ),
             command=self.toggle_scale_mode,
             **kw,
         )
         self.export_button = DirectButton(
             text="Export",
             frameSize=(-0.065, 0.065, -0.032, 0.032),
-            pos=(0.805, 0, BZ),
+            pos=(0.930, 0, BZ),
             command=self.export_build,
             **kw,
         )
         self.import_button = DirectButton(
             text="Import",
             frameSize=(-0.065, 0.065, -0.032, 0.032),
-            pos=(0.950, 0, BZ),
+            pos=(1.075, 0, BZ),
             command=self.import_build,
             **kw,
         )
         self.cloud_save_button = DirectButton(
             text="Save",
             frameSize=(-0.055, 0.055, -0.032, 0.032),
-            pos=(1.085, 0, BZ),
+            pos=(1.210, 0, BZ),
             command=self.cloud_save_build,
             **kw,
         )
