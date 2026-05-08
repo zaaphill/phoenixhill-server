@@ -24,6 +24,10 @@ _MAX_SWING  = 30.0
 _WALK_SPEED = 10.0
 _LERP       = 18.0   # interpolation factor — higher = snappier catch-up
 _MAX_CHAT   = 8      # chat lines shown
+_CHAT_PNL_W = 0.88   # chat panel width (units in aspect2d)
+_CHAT_PNL_H = 0.36   # chat message area height
+_INPUT_H    = 0.058  # chat input bar height
+_LB_W       = 0.32   # leaderboard panel width
 
 
 class MultiplayerMixin:
@@ -99,7 +103,7 @@ class MultiplayerMixin:
         self._mp_task = None
 
         self._teardown_chat_ui()
-        self._teardown_player_count_label()
+        self._teardown_leaderboard()
         self.ignore("/")
 
     # ── Background asyncio thread ──────────────────────────────────────────
@@ -308,14 +312,14 @@ class MultiplayerMixin:
         t = msg.get("type")
         if t == "_connected":
             self._show_toast("Multiplayer connected", (0.40, 0.88, 0.52, 1))
-            self._update_player_count_label()
+            self._update_leaderboard()
             return
         if t == "_reconnecting":
             self._show_toast("Connection lost, reconnecting...", (1.0, 0.85, 0.30, 1), duration=3.0)
             for pid in list(self._remote_players.keys()):
                 self._remove_remote_player(pid)
             self._remote_players = {}
-            self._update_player_count_label()
+            self._update_leaderboard()
             return
         if t == "_error":
             err_text = msg.get('msg', '')
@@ -338,15 +342,15 @@ class MultiplayerMixin:
             for pid, d in msg.get("players", {}).items():
                 self._add_remote_player(pid, d.get("username", pid))
                 self._update_remote_player(pid, d)
-            self._update_player_count_label()
+            self._update_leaderboard()
         elif t == "joined":
             print(f"[MP] joined: {msg['player_id']} ({msg.get('username')})")
             self._add_remote_player(msg["player_id"], msg.get("username", ""))
-            self._update_player_count_label()
+            self._update_leaderboard()
         elif t == "left":
             print(f"[MP] left: {msg['player_id']}")
             self._remove_remote_player(msg["player_id"])
-            self._update_player_count_label()
+            self._update_leaderboard()
         elif t == "move":
             pid = msg.get("player_id")
             if pid and pid in self._remote_players:
@@ -465,6 +469,7 @@ class MultiplayerMixin:
             "root": root, "label": label,
             "la_piv": la_piv, "ra_piv": ra_piv,
             "ll_piv": ll_piv, "rl_piv": rl_piv,
+            "username": username,
             "walk_angle": 0.0, "is_moving": False,
             "last_pos": None, "last_move_time": 0.0,
             "target_pos": None, "target_h": 0.0,
@@ -506,55 +511,102 @@ class MultiplayerMixin:
             except Exception:
                 pass
 
-    # ── Player count label ────────────────────────────────────────────────
+    # ── Leaderboard (top right) ───────────────────────────────────────────
 
-    def _update_player_count_label(self):
-        count = len(getattr(self, "_remote_players", {}))
-        if count == 0:
-            text = "Waiting for players...  (stay here — they will appear when they join)"
-            color = (1.0, 0.85, 0.30, 1.0)
-        else:
-            text = f"{count} player{'s' if count != 1 else ''} connected"
-            color = (0.45, 0.95, 0.55, 1.0)
-        lbl = getattr(self, "_mp_count_lbl", None)
-        if lbl is None:
-            self._mp_count_lbl = DirectLabel(
-                text=text,
-                text_fg=color, text_scale=0.034,
-                frameColor=(0.06, 0.07, 0.10, 0.80),
-                frameSize=(-0.68, 0.68, -0.028, 0.028),
-                parent=base.a2dTopCenter,
-                pos=(0, 0, -0.10),
-                sortOrder=60,
+    def _update_leaderboard(self):
+        lb = getattr(self, "_lb_panel", None)
+        if lb:
+            try:
+                lb.destroy()
+            except Exception:
+                pass
+        self._lb_panel = None
+
+        local   = getattr(self, "_session_username", "You")
+        remotes = [d.get("username", "") or pid
+                   for pid, d in getattr(self, "_remote_players", {}).items()]
+        players = [local] + remotes
+
+        row_h   = 0.040
+        title_h = 0.048
+        pad     = 0.014
+        h       = title_h + len(players) * row_h + pad
+
+        self._lb_panel = DirectFrame(
+            frameColor=(0, 0, 0, 0.55),
+            frameSize=(-_LB_W, 0, -h, 0),
+            parent=base.a2dTopRight,
+            pos=(-0.04, 0, -0.04),
+            sortOrder=55,
+        )
+        DirectLabel(
+            text="Players",
+            text_fg=(1, 1, 1, 0.65),
+            text_scale=0.032,
+            text_align=TextNode.ACenter,
+            frameColor=(0, 0, 0, 0),
+            parent=self._lb_panel,
+            pos=(-_LB_W * 0.5, 0, -0.030),
+        )
+        for i, name in enumerate(players):
+            color   = (0.95, 0.85, 0.30, 1) if i == 0 else (0.88, 0.90, 0.95, 1)
+            display = f"{name}  (You)" if i == 0 else name
+            DirectLabel(
+                text=display,
+                text_fg=color,
+                text_scale=0.030,
+                text_align=TextNode.ALeft,
+                frameColor=(0, 0, 0, 0),
+                parent=self._lb_panel,
+                pos=(-_LB_W + 0.014, 0, -(title_h + i * row_h + 0.010)),
             )
-        else:
-            try:
-                lbl["text"]    = text
-                lbl["text_fg"] = color
-            except Exception:
-                pass
 
-    def _teardown_player_count_label(self):
-        lbl = getattr(self, "_mp_count_lbl", None)
-        if lbl:
+    def _teardown_leaderboard(self):
+        lb = getattr(self, "_lb_panel", None)
+        if lb:
             try:
-                lbl.destroy()
+                lb.destroy()
             except Exception:
                 pass
-        self._mp_count_lbl = None
+        self._lb_panel = None
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
     def _setup_chat_ui(self):
         self._chat_messages     = []
         self._chat_input_active = False
+        self._chat_visible      = True
 
+        # Toggle button — always visible, top left
+        self._chat_toggle_btn = DirectButton(
+            text="Chat",
+            text_fg=(1, 1, 1, 0.9),
+            text_scale=0.030,
+            frameColor=(0, 0, 0, 0.62),
+            frameSize=(0, 0.14, -0.044, 0),
+            parent=base.a2dTopLeft,
+            pos=(0.04, 0, -0.04),
+            sortOrder=55,
+            relief=1,
+            command=self._toggle_chat,
+        )
+
+        # Message panel (just below toggle button)
         self._chat_panel = DirectFrame(
-            frameColor=(0, 0, 0, 0.45),
-            frameSize=(0, 0.88, 0, 0.30),
-            parent=base.a2dBottomLeft,
-            pos=(0.02, 0, 0.06),
+            frameColor=(0, 0, 0, 0.50),
+            frameSize=(0, _CHAT_PNL_W, -_CHAT_PNL_H, 0),
+            parent=base.a2dTopLeft,
+            pos=(0.04, 0, -0.092),
             sortOrder=50,
+        )
+        DirectLabel(
+            text="Chat '/?' or '/help' for a list of chat commands.",
+            text_fg=(1, 1, 1, 0.50),
+            text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=self._chat_panel,
+            pos=(0.014, 0, -0.030),
         )
         self._chat_labels = []
         for i in range(_MAX_CHAT):
@@ -565,42 +617,42 @@ class MultiplayerMixin:
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
                 parent=self._chat_panel,
-                pos=(0.025, 0, 0.255 - i * 0.034),
+                pos=(0.014, 0, -0.068 - i * 0.036),
             )
             self._chat_labels.append(lbl)
 
-        # Input bar (hidden until T is pressed)
+        # Input bar (permanently visible below the message panel)
+        _panel_bot = -0.092 - _CHAT_PNL_H
         self._chat_input_frame = DirectFrame(
-            frameColor=(0, 0, 0, 0.65),
-            frameSize=(0, 0.88, 0, 0.050),
-            parent=base.a2dBottomLeft,
-            pos=(0.02, 0, 0.008),
+            frameColor=(0, 0, 0, 0.68),
+            frameSize=(0, _CHAT_PNL_W, -_INPUT_H, 0),
+            parent=base.a2dTopLeft,
+            pos=(0.04, 0, _panel_bot),
             sortOrder=51,
+        )
+        self._chat_placeholder = DirectLabel(
+            text='To chat click here or press "/" key',
+            text_fg=(1, 1, 1, 0.38),
+            text_scale=0.028,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=self._chat_input_frame,
+            pos=(0.015, 0, -0.032),
         )
         self._chat_entry = DirectEntry(
             text_fg=(1, 1, 1, 1),
             text_scale=0.033,
-            frameColor=(0.18, 0.20, 0.28, 1),
+            frameColor=(0, 0, 0, 0),
             width=24,
             numLines=1,
             parent=self._chat_input_frame,
-            pos=(0.025, 0, 0.009),
+            pos=(0.012, 0, -0.036),
             command=self._on_chat_submit,
         )
-        self._chat_input_frame.hide()
-
-        self._chat_hint = DirectLabel(
-            text="[/] Chat",
-            text_fg=(1, 1, 1, 0.30),
-            text_scale=0.026,
-            frameColor=(0, 0, 0, 0),
-            parent=base.a2dBottomLeft,
-            pos=(0.025, 0, 0.032),
-            sortOrder=50,
-        )
+        self._chat_entry.hide()
 
     def _teardown_chat_ui(self):
-        for attr in ("_chat_panel", "_chat_input_frame", "_chat_hint"):
+        for attr in ("_chat_toggle_btn", "_chat_panel", "_chat_input_frame"):
             node = getattr(self, attr, None)
             if node:
                 try:
@@ -611,23 +663,42 @@ class MultiplayerMixin:
         self._chat_labels       = []
         self._chat_messages     = []
         self._chat_input_active = False
+        self._chat_placeholder  = None
+
+    def _toggle_chat(self):
+        self._chat_visible = not getattr(self, "_chat_visible", True)
+        panel = getattr(self, "_chat_panel", None)
+        inp   = getattr(self, "_chat_input_frame", None)
+        if self._chat_visible:
+            if panel: panel.show()
+            if inp:   inp.show()
+        else:
+            if panel: panel.hide()
+            if inp:   inp.hide()
+            self._close_chat_input()
 
     def _open_chat_input(self):
+        if not getattr(self, "_chat_visible", True):
+            self._chat_visible = True
+            p = getattr(self, "_chat_panel", None)
+            i = getattr(self, "_chat_input_frame", None)
+            if p: p.show()
+            if i: i.show()
         if getattr(self, "_chat_input_active", False):
             return
         self._chat_input_active = True
-        if hasattr(self, "_chat_hint") and self._chat_hint:
-            self._chat_hint.hide()
-        self._chat_input_frame.show()
+        ph = getattr(self, "_chat_placeholder", None)
+        if ph: ph.hide()
+        self._chat_entry.show()
         self._chat_entry.set("")
         self._chat_entry["focus"] = 1
 
     def _close_chat_input(self):
         self._chat_input_active = False
-        self._chat_input_frame.hide()
+        self._chat_entry.hide()
         self._chat_entry["focus"] = 0
-        if hasattr(self, "_chat_hint") and self._chat_hint:
-            self._chat_hint.show()
+        ph = getattr(self, "_chat_placeholder", None)
+        if ph: ph.show()
 
     def _on_chat_submit(self, text):
         self._chat_entry.set("")
