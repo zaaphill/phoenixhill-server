@@ -351,11 +351,12 @@ def browse_published():
 def get_avatar(token: str):
     sess = _get_session(token)
     c = _db()
-    row = c.execute("SELECT avatar_colors FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+    row = c.execute("SELECT avatar_colors, equipped_tshirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
     c.close()
+    equipped = int(row["equipped_tshirt"]) if row and row["equipped_tshirt"] else None
     if not row or not row["avatar_colors"]:
-        return {"colors": {}}
-    return {"colors": json.loads(row["avatar_colors"])}
+        return {"colors": {}, "equipped_tshirt": equipped}
+    return {"colors": json.loads(row["avatar_colors"]), "equipped_tshirt": equipped}
 
 
 @app.put("/api/avatar")

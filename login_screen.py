@@ -82,6 +82,7 @@ class LoginScreenMixin:
         self._login_status     = None
         self._server_proc      = None
         self._is_play_only     = False
+        self._equipped_tshirt_id = None
 
         self._hide_studio_ui()
         self._show_startup_splash()
@@ -314,6 +315,9 @@ class LoginScreenMixin:
         try:
             av_res, _ = auth_client.get_avatar(token)
             server_colors = (av_res or {}).get("colors") or {}
+            equipped = (av_res or {}).get("equipped_tshirt")
+            if equipped is not None:
+                self._equipped_tshirt_id = int(equipped)
             local = self.load_avatar_colors(username)
             if server_colors and isinstance(server_colors, dict):
                 for part in list(local.keys()):
@@ -2293,6 +2297,18 @@ class LoginScreenMixin:
         self.is_playtest = True
         self._panel.hide()
         self.character.show()
+        # Restore equipped T-shirt (fetched from server during login sync)
+        equipped_id = getattr(self, "_equipped_tshirt_id", None)
+        if equipped_id and hasattr(self, "apply_tshirt"):
+            def _load_tshirt(eid=equipped_id):
+                item, _ = auth_client.get_shop_item(eid)
+                if item and item.get("image_data"):
+                    b64 = item["image_data"]
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _b=b64: (self.apply_tshirt(_b), task.done)[1],
+                        "_restoreEquippedTshirt", appendTask=True,
+                    )
+            threading.Thread(target=_load_tshirt, daemon=True).start()
         try:
             self._load_bricks_from_data(json.loads(data_str))
         except Exception as e:
