@@ -628,7 +628,7 @@ class MultiplayerMixin:
             cm = CardMaker('rtshirt')
             cm.setFrame(-1, 1, 0, 2)
             anchor = root.attachNewNode("tshirt_anchor")
-            anchor.setPos(0, -(0.5 + 0.01), 2)
+            anchor.setPos(0, 0.51, 2)
             np = anchor.attachNewNode(cm.generate())
             np.setH(180)
             np.setTexture(tex)
@@ -636,6 +636,7 @@ class MultiplayerMixin:
             np.setLightOff()
             np.setShaderOff()
             np.setDepthWrite(False)
+            np.setDepthOffset(1)
             d["tshirt_anchor"] = anchor
             d["tshirt_np"] = np
         except Exception as e:

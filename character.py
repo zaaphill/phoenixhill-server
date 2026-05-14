@@ -341,7 +341,7 @@ class CharacterMixin:
             cm = CardMaker('tshirt')
             cm.setFrame(-1, 1, 0, 2)
             anchor = self.character.attachNewNode("tshirt_anchor")
-            anchor.setPos(0, -(0.5 + 0.01), 2)
+            anchor.setPos(0, 0.51, 2)
             np = anchor.attachNewNode(cm.generate())
             np.setH(180)
             np.setTexture(tex)
@@ -349,6 +349,7 @@ class CharacterMixin:
             np.setLightOff()
             np.setShaderOff()
             np.setDepthWrite(False)
+            np.setDepthOffset(1)
             self._tshirt_node = np
             self._tshirt_anchor = anchor
         except Exception as e:
