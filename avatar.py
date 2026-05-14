@@ -318,9 +318,10 @@ class AvatarMixin:
         cam_np.setPos(0, -8, 0)
         cam_np.lookAt(preview_root, Point3(0, 0, 3))
         lens = cam_np.node().getLens()
-        # makeCamera already sets aspect from buffer (400/480 = 0.833 = CARD_W/CARD_H).
-        # setFov(h) alone lets Panda3D derive vFOV from that aspect.
-        lens.setFov(32)
+        # Must set aspect explicitly — makeCamera may use main-window aspect by default.
+        # setFov(h) then derives vFOV from the given aspect.
+        lens.setAspectRatio(CARD_W / CARD_H)   # 0.833 = buffer 400/480
+        lens.setFov(32)                         # hFOV 32° → vFOV ≈ 38°
         lens.setNearFar(0.1, 1000)
         cam_np.node().setCameraMask(PMASK)
         self._avatar_cam_np = cam_np

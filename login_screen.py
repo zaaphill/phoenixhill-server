@@ -1208,7 +1208,7 @@ class LoginScreenMixin:
             extraArgs=[items, items_err, owned], appendTask=True,
         )
 
-    def _render_shop_thumbnails(self, items):
+    def _render_shop_thumbnails(self, items, buf_w=300, buf_h=173):
         """RTT-render one avatar+tshirt frame per item; returns {item_id: Texture}."""
         items_with_img = [(it["id"], it["image_data"]) for it in items if it.get("image_data")]
         if not items_with_img:
@@ -1216,9 +1216,7 @@ class LoginScreenMixin:
 
         result = {}
         PMASK  = BitMask32.bit(6)
-        # Buffer aspect must match the shop card display aspect:
-        # card is _SHOP_CW × _SHOP_CTH = 0.52 × 0.30 → aspect 0.52/0.30 ≈ 1.733 (landscape)
-        BUF_W, BUF_H = 300, 173
+        BUF_W, BUF_H = buf_w, buf_h
 
         _DEFAULTS = {
             "head":      (244/255, 204/255,  67/255, 1),
@@ -1307,13 +1305,14 @@ class LoginScreenMixin:
         cam_np = self.makeCamera(buf)
         cam_np.reparentTo(self.render)
         # Camera at Y=-7 from rig, same height as look target (no tilt).
-        # makeCamera sets lens aspect from buffer (300/173 ≈ 1.733, landscape).
-        # hFOV 40° at distance 7 → 5.1 units wide (covers arms at ±2) and
-        # vFOV ≈ 24° → 2.9 units tall centred at Z=3.5 → shows Z 2.05–4.95
-        # (full torso Z=2–4 + most of head Z=4–5.1).
+        # Explicit setAspectRatio is required — makeCamera may inherit the main window
+        # aspect instead of deriving it from the off-screen buffer.
+        # hFOV 40° at distance 7 → 5.1 units wide (covers arms at ±2).
+        # vFOV is auto-derived from BUF_W/BUF_H aspect.
         cam_np.setPos(0, 3000 - 7, 3.5)
         cam_np.lookAt(rig, Point3(0, 0, 3.5))
         lens = cam_np.node().getLens()
+        lens.setAspectRatio(BUF_W / BUF_H)
         lens.setFov(40)
         lens.setNearFar(0.1, 10000)
         cam_np.node().setCameraMask(PMASK)
@@ -1321,15 +1320,23 @@ class LoginScreenMixin:
         orig_mask = self.camNode.getCameraMask()
         self.camNode.setCameraMask(orig_mask & ~PMASK)
 
+        # Pre-warm: one blank render so the buffer/texture is fully initialised.
+        self.graphicsEngine.renderFrame()
+
         # ── Render each item ───────────────────────────────────────────────────
         for item_id, image_b64 in items_with_img:
             _swap_tshirt(image_b64)
             self.graphicsEngine.renderFrame()
+            # extractTextureData forces GPU→CPU readback so store() succeeds.
+            rtex = buf.getTexture()
+            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
             pnm = PNMImage()
-            if buf.getTexture().store(pnm):
+            if rtex.store(pnm):
                 out_tex = Texture()
                 out_tex.load(pnm)
                 result[item_id] = out_tex
+            else:
+                print(f"[SHOP_THUMB] store failed for item {item_id}", flush=True)
 
         # ── Cleanup ────────────────────────────────────────────────────────────
         if tshirt_anchor[0] and not tshirt_anchor[0].isEmpty():
@@ -1538,13 +1545,32 @@ class LoginScreenMixin:
                 extraArgs=[item_id],
             )
 
-        # Fetch full item with image in background
+        # Fetch full item then render an RTT avatar wearing the shirt
         def _fetch_image():
             full, _ = auth_client.get_shop_item(item_id)
             if full and full.get("image_data"):
-                def _apply(task, b64=full["image_data"], frm=img_frame):
-                    if frm and not frm.isEmpty():
-                        self._apply_thumbnail_texture(frm, b64)
+                b64 = full["image_data"]
+                def _apply(task, _b64=b64, frm=img_frame, _id=item_id):
+                    if not frm or frm.isEmpty():
+                        return task.done
+                    try:
+                        # buf_h matched to frame aspect: 1.0/0.84 ≈ 1.19 → 300×252
+                        textures = self._render_shop_thumbnails(
+                            [{"id": _id, "image_data": _b64}],
+                            buf_w=300, buf_h=252,
+                        )
+                        rtt = textures.get(_id)
+                        if rtt:
+                            fs = frm["frameSize"]
+                            hw, hh = abs(fs[1]), abs(fs[3])
+                            frm["frameColor"]  = (1, 1, 1, 1)
+                            frm["image"]       = rtt
+                            frm["image_scale"] = (hw, 1, hh)
+                        else:
+                            self._apply_thumbnail_texture(frm, _b64)
+                    except Exception as e:
+                        print(f"[POPUP_THUMB] {e}", flush=True)
+                        self._apply_thumbnail_texture(frm, _b64)
                     return task.done
                 self.taskMgr.doMethodLater(0, _apply, "_applyShopImg", appendTask=True)
         threading.Thread(target=_fetch_image, daemon=True).start()
