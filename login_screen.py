@@ -8,7 +8,7 @@ import threading
 import time
 
 from direct.gui.DirectGui import DirectFrame, DirectLabel, DirectEntry, DirectButton
-from panda3d.core import Point3, TextNode
+from panda3d.core import Point3, TextNode, TransparencyAttrib, Filename
 
 import auth_client
 
@@ -32,20 +32,20 @@ RED     = (1.0,  0.40, 0.40, 1.0)
 GREEN   = (0.45, 0.90, 0.55, 1.0)
 
 # ── RetroStudios-style browse palette ─────────────────────────────────────────
-_RS_BG      = (0.06, 0.05, 0.10, 1.0)
-_RS_NAV     = (0.09, 0.07, 0.15, 1.0)
-_RS_CARD    = (0.13, 0.11, 0.21, 1.0)
-_RS_ORANGE  = (0.91, 0.47, 0.13, 1.0)
-_RS_BORDER  = (0.18, 0.14, 0.28, 1.0)
-_RS_WHITE   = (1.00, 1.00, 1.00, 1.0)
-_RS_GRAY    = (0.58, 0.56, 0.65, 1.0)
+_RS_BG      = (0.78, 0.75, 0.88, 1.0)
+_RS_NAV     = (0.55, 0.45, 0.76, 1.0)
+_RS_CARD    = (0.84, 0.82, 0.93, 1.0)
+_RS_ORANGE  = (0.58, 0.18, 0.82, 1.0)
+_RS_BORDER  = (0.48, 0.38, 0.66, 1.0)
+_RS_WHITE   = (0.00, 0.00, 0.00, 1.0)
+_RS_GRAY    = (0.00, 0.00, 0.00, 1.0)
 _RS_GREEN   = (0.27, 0.82, 0.43, 1.0)
 _RS_RED     = (0.85, 0.18, 0.18, 1.0)
 _THUMB_TINTS = [
-    (0.22, 0.12, 0.38, 1), (0.10, 0.18, 0.40, 1),
-    (0.12, 0.28, 0.20, 1), (0.36, 0.14, 0.10, 1),
-    (0.28, 0.10, 0.38, 1), (0.10, 0.26, 0.40, 1),
-    (0.18, 0.32, 0.12, 1), (0.36, 0.18, 0.28, 1),
+    (0.48, 0.32, 0.68, 1), (0.28, 0.40, 0.72, 1),
+    (0.28, 0.56, 0.44, 1), (0.68, 0.38, 0.30, 1),
+    (0.54, 0.28, 0.70, 1), (0.28, 0.50, 0.70, 1),
+    (0.38, 0.64, 0.28, 1), (0.68, 0.42, 0.56, 1),
 ]
 _GRID_COLS  = 5
 _CARD_W     = 0.60
@@ -55,6 +55,17 @@ _CARD_H     = _CARD_TH + _CARD_INFO  # 0.50
 _CARD_GAP_X = 0.04
 _CARD_GAP_Y = 0.04
 _PAGE_SIZE  = 15     # 5 cols × 3 rows
+
+# ── Shop screen layout constants ───────────────────────────────────────────
+_SHOP_COLS  = 6
+_SHOP_CW    = 0.52   # card full width
+_SHOP_CTH   = 0.30   # thumbnail full height
+_SHOP_CIH   = 0.18   # info area full height
+_SHOP_CH    = 0.48   # total card full height
+_SHOP_GAPX  = 0.03
+_SHOP_GAPY  = 0.04
+_SHOP_PAGE  = 18     # 6 × 3
+
 
 
 class LoginScreenMixin:
@@ -92,36 +103,24 @@ class LoginScreenMixin:
     def _kill_port_8000(self):
         """Kill whatever process is already listening on port 8000."""
         try:
-            result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True,
-            )
+            result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+            killed = set()
             for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 5 and ":8000" in parts[1] and parts[3] == "LISTENING":
-                    subprocess.run(
-                        ["taskkill", "/F", "/PID", parts[4]],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+                if ":8000" in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = parts[-1]
+                    if pid not in killed:
+                        subprocess.run(["taskkill", "/F", "/PID", pid],
+                                       capture_output=True, text=True)
+                        killed.add(pid)
+            if killed:
+                time.sleep(1.5)
         except Exception:
             pass
 
-    _REQUIRED_SERVER_API_VERSION = 4
+    _REQUIRED_SERVER_API_VERSION = 8
 
     def _start_server(self):
-        # If a working server is already running, check it has the latest API.
-        result, _ = auth_client.browse_published()
-        if result is not None:
-            rooms_result, _ = auth_client.get_rooms()
-            if rooms_result is not None:
-                sv_result, _ = auth_client.get_server_version()
-                if sv_result and sv_result.get("api_version", 0) >= self._REQUIRED_SERVER_API_VERSION:
-                    return   # server is current — leave it alone
-            # Server is running but outdated — fall through to kill + restart
-
-        # Use a lock file so two instances that start simultaneously don't both
-        # kill-and-restart the server.  Only the winner does the actual launch;
-        # the loser waits up to 10 s for the server to come up.
         try:
             fd = os.open(_SERVER_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
@@ -130,35 +129,34 @@ class LoginScreenMixin:
             owns_lock = False
 
         if not owns_lock:
-            for _ in range(20):           # 20 × 0.5 s = 10 s
+            for _ in range(20):
                 time.sleep(0.5)
                 result, _ = auth_client.browse_published()
                 if result is not None:
                     return
-            # Stale lock (game crashed mid-start) — clean up and take over.
             try:
                 os.remove(_SERVER_LOCK)
             except Exception:
                 pass
-            result, _ = auth_client.browse_published()
-            if result is not None:
-                return
 
         try:
             self._kill_port_8000()
             server_py = os.path.join(_HERE, "server.py")
-            log_path  = os.path.join(_USER_DATA, "server_log.txt")
+            log_path  = os.path.join(_HERE, "server_log.txt")
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             try:
-                self._server_log = open(log_path, "w")
+                log_file = open(log_path, "w", encoding="utf-8")
+                self._server_log = log_file
                 self._server_proc = subprocess.Popen(
                     [sys.executable, server_py],
-                    stdout=self._server_log,
-                    stderr=self._server_log,
+                    cwd=os.path.dirname(server_py),
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
                     creationflags=flags,
                 )
                 atexit.register(self._stop_server)
-            except Exception:
+            except Exception as e:
+                print(f"[SERVER] Popen failed: {e}", flush=True)
                 self._server_proc = None
         finally:
             try:
@@ -185,20 +183,37 @@ class LoginScreenMixin:
         cfg = config.get()
         sub = "Starting server…" if cfg["local"] else f"Connecting to {cfg['display']}…"
         self._splash = DirectFrame(
-            frameColor=DARKER,
+            frameColor=_RS_BG,
             frameSize=(-3, 3, -3, 3),
         )
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=self._splash, pos=(0, 0, 0.908),
+        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-0.40, 0.40, -0.14, 0.14),
+            parent=self._splash, pos=(0, 0, 0),
+        )
         DirectLabel(
-            text="PhoenixHill",
-            text_fg=TEXT, text_scale=0.090,
+            text="Loading…",
+            text_fg=_RS_WHITE, text_scale=0.036,
             frameColor=(0, 0, 0, 0),
-            parent=self._splash, pos=(0, 0, 0.08),
+            parent=card, pos=(0, 0, 0.052),
         )
         DirectLabel(
             text=sub,
-            text_fg=TEXT_D, text_scale=0.040,
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=self._splash, pos=(0, 0, -0.06),
+            parent=card, pos=(0, 0, -0.034),
         )
 
     def _wait_for_server_thread(self):
@@ -341,75 +356,116 @@ class LoginScreenMixin:
         if self._login_ui:
             self._login_ui.destroy()
 
-        # Full-screen backdrop so the 3D world doesn't show through.
         root = DirectFrame(
-            frameColor=DARKER,
+            frameColor=_RS_BG,
             frameSize=(-3, 3, -3, 3),
         )
         self._login_ui = root
 
-        # Card centered on the backdrop.
-        root = DirectFrame(
-            frameColor=DARK,
-            frameSize=(-0.54, 0.54, -0.46, 0.46),
-            parent=self._login_ui,
+        # Top nav bar
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=root, pos=(0, 0, 0.908),
+        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+
+        # Login card
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-0.52, 0.52, -0.44, 0.42),
+            parent=root, pos=(0, 0, 0),
+        )
+        DirectLabel(
+            text="Welcome back",
+            text_fg=_RS_WHITE, text_scale=0.038,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.305),
+        )
+        DirectLabel(
+            text="Sign in or create an account to continue",
+            text_fg=_RS_GRAY, text_scale=0.024,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.235),
+        )
+        DirectFrame(
+            frameColor=_RS_BORDER,
+            frameSize=(-0.44, 0.44, -0.002, 0.002),
+            parent=card, pos=(0, 0, 0.185),
         )
 
-        DirectLabel(
-            text="PhoenixHill",
-            text_fg=TEXT, text_scale=0.072,
-            frameColor=(0, 0, 0, 0),
-            parent=root, pos=(0, 0, 0.30),
-        )
+        # Username
         DirectLabel(
             text="Username",
-            text_fg=TEXT, text_scale=0.036,
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=root, pos=(-0.20, 0, 0.175),
+            parent=card, pos=(-0.44, 0, 0.125),
+            text_align=TextNode.ALeft,
+        )
+        u_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.44, 0.44, -0.042, 0.042),
+            parent=card, pos=(0, 0, 0.048),
         )
         self._u_entry = DirectEntry(
-            text_fg=TEXT, text_scale=0.040,
-            frameColor=MED,
-            width=16, numLines=1,
-            parent=root, pos=(-0.38, 0, 0.10),
+            text_fg=_RS_WHITE, text_scale=0.034,
+            frameColor=(0, 0, 0, 0),
+            width=24, numLines=1,
+            parent=u_bg, pos=(-0.41, 0, -0.016),
             initialText="",
             focus=1,
         )
+
+        # Password
         DirectLabel(
             text="Password",
-            text_fg=TEXT, text_scale=0.036,
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=root, pos=(-0.20, 0, 0.005),
+            parent=card, pos=(-0.44, 0, -0.060),
+            text_align=TextNode.ALeft,
+        )
+        p_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.44, 0.44, -0.042, 0.042),
+            parent=card, pos=(0, 0, -0.140),
         )
         self._p_entry = DirectEntry(
-            text_fg=TEXT, text_scale=0.040,
-            frameColor=MED,
-            width=16, numLines=1,
-            parent=root, pos=(-0.38, 0, -0.07),
+            text_fg=_RS_WHITE, text_scale=0.034,
+            frameColor=(0, 0, 0, 0),
+            width=24, numLines=1,
+            parent=p_bg, pos=(-0.41, 0, -0.016),
             initialText="",
             obscured=1,
             command=self._on_enter_pressed,
         )
+
         self._login_status = DirectLabel(
             text="",
-            text_fg=RED, text_scale=0.034,
+            text_fg=_RS_RED, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=root, pos=(0, 0, -0.17),
+            parent=card, pos=(0, 0, -0.250),
         )
+
         DirectButton(
             text="Log In",
-            text_fg=TEXT, text_scale=0.042,
-            frameColor=SEL,
-            frameSize=(-0.155, 0.155, -0.038, 0.038),
-            parent=root, pos=(-0.19, 0, -0.27),
+            text_fg=_RS_WHITE, text_scale=0.036,
+            frameColor=_RS_ORANGE,
+            frameSize=(-0.195, 0.195, -0.046, 0.046),
+            parent=card, pos=(-0.22, 0, -0.345),
             command=self._do_login, relief=1,
         )
         DirectButton(
             text="Sign Up",
-            text_fg=TEXT, text_scale=0.042,
-            frameColor=BTN,
-            frameSize=(-0.155, 0.155, -0.038, 0.038),
-            parent=root, pos=(0.19, 0, -0.27),
+            text_fg=_RS_GRAY, text_scale=0.032,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.168, 0.168, -0.040, 0.040),
+            parent=card, pos=(0.26, 0, -0.345),
             command=self._do_register, relief=1,
         )
 
@@ -418,7 +474,7 @@ class LoginScreenMixin:
 
     def _set_status(self, msg, color=None):
         if color is None:
-            color = RED
+            color = _RS_RED
         lbl = self._login_status
         if lbl and not lbl.isEmpty():
             lbl["text"]    = msg
@@ -432,7 +488,7 @@ class LoginScreenMixin:
         if not u or not p:
             self._set_status("Enter username and password.")
             return
-        self._set_status("Logging in…", TEXT_D)
+        self._set_status("Logging in…", _RS_GRAY)
         def worker():
             result, err = auth_client.login(u, p)
             if result and result.get("ok"):
@@ -453,7 +509,7 @@ class LoginScreenMixin:
         if not u or not p:
             self._set_status("Enter username and password.")
             return
-        self._set_status("Registering…", TEXT_D)
+        self._set_status("Registering…", _RS_GRAY)
         def worker():
             result, err = auth_client.register(u, p)
             if result and result.get("ok"):
@@ -496,25 +552,42 @@ class LoginScreenMixin:
     def _auto_join_server(self):
         """After login, find the best active server and join it automatically."""
         # Show a brief connecting splash
-        self._join_splash = DirectFrame(frameColor=DARKER, frameSize=(-3, 3, -3, 3))
+        self._join_splash = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=self._join_splash, pos=(0, 0, 0.908),
+        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-0.44, 0.44, -0.20, 0.16),
+            parent=self._join_splash, pos=(0, 0, 0),
+        )
         DirectLabel(
-            text="PhoenixHill",
-            text_fg=TEXT, text_scale=0.090,
+            text="Finding a server…",
+            text_fg=_RS_WHITE, text_scale=0.034,
             frameColor=(0, 0, 0, 0),
-            parent=self._join_splash, pos=(0, 0, 0.08),
+            parent=card, pos=(0, 0, 0.082),
         )
         self._join_status_lbl = DirectLabel(
-            text="Finding a server…",
-            text_fg=TEXT_D, text_scale=0.040,
+            text="",
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=self._join_splash, pos=(0, 0, -0.06),
+            parent=card, pos=(0, 0, 0.020),
         )
         DirectButton(
             text="Browse servers instead",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=BTN,
-            frameSize=(-0.22, 0.22, -0.030, 0.030),
-            parent=self._join_splash, pos=(0, 0, -0.20),
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.22, 0.22, -0.034, 0.034),
+            parent=card, pos=(0, 0, -0.130),
             command=self._cancel_auto_join, relief=1,
         )
         threading.Thread(target=self._find_and_join_thread, daemon=True).start()
@@ -567,79 +640,95 @@ class LoginScreenMixin:
     # ── Main menu ──────────────────────────────────────────────────────────
 
     def _build_main_menu(self):
+        self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
 
-        # Full-screen backdrop
-        bg = DirectFrame(frameColor=DARKER, frameSize=(-3, 3, -3, 3))
+        bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
 
-        # Centered card
-        card = DirectFrame(
-            frameColor=DARK,
-            frameSize=(-0.78, 0.78, -0.62, 0.60),
-            parent=bg,
+        # ── Top nav bar (Build tab active) ─────────────────────────────────
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=bg, pos=(0, 0, 0.908),
         )
-
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        for i, (tab_text, tab_cmd) in enumerate([
+            ("Games",  self._build_browse_screen),
+            ("Avatar", self._build_avatar_screen),
+            ("Shop",   self._build_shop_screen),
+            ("Build",  self._build_main_menu),
+        ]):
+            is_active = (i == 3)
+            DirectButton(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.034,
+                frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
+                frameSize=(-0.10, 0.10, -0.052, 0.052),
+                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                relief=1 if is_active else 0,
+                command=tab_cmd,
+            )
         DirectLabel(
-            text="PhoenixHill",
-            text_fg=TEXT, text_scale=0.078,
+            text=self._session_username or "",
+            text_fg=_RS_GRAY, text_scale=0.028,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, 0.46),
-        )
-        DirectLabel(
-            text=f"Welcome, {self._session_username}",
-            text_fg=TEXT_D, text_scale=0.038,
-            frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, 0.34),
-        )
-        DirectLabel(
-            text="My Builds",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=(0, 0, 0, 0),
-            parent=card, pos=(-0.44, 0, 0.24),
-        )
-
-        # Build list area (populated after fetch)
-        self._build_list_frame = DirectFrame(
-            frameColor=(0, 0, 0, 0),
-            frameSize=(-0.74, 0.74, -0.36, 0),
-            parent=card, pos=(0, 0, 0.22),
-        )
-        self._build_list_status = DirectLabel(
-            text="Loading…",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=(0, 0, 0, 0),
-            parent=self._build_list_frame, pos=(0, 0, -0.06),
-        )
-
-        # Bottom buttons
-        DirectButton(
-            text="< Play",
-            text_fg=TEXT, text_scale=0.038,
-            frameColor=(0.14, 0.42, 0.22, 1.0),
-            frameSize=(-0.18, 0.18, -0.036, 0.036),
-            parent=card, pos=(0, 0, -0.40),
-            command=self._build_browse_screen, relief=1,
-        )
-        DirectButton(
-            text="New Build",
-            text_fg=TEXT, text_scale=0.044,
-            frameColor=SEL,
-            frameSize=(-0.18, 0.18, -0.042, 0.042),
-            parent=card, pos=(-0.22, 0, -0.52),
-            command=self._enter_studio, relief=1,
+            parent=nav, pos=(1.20, 0, -0.014),
         )
         DirectButton(
             text="Log Out",
-            text_fg=TEXT_D, text_scale=0.038,
-            frameColor=BTN,
-            frameSize=(-0.14, 0.14, -0.036, 0.036),
-            parent=card, pos=(0.22, 0, -0.52),
-            command=self._do_logout, relief=1,
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.082, 0.082, -0.026, 0.026),
+            parent=nav, pos=(1.55, 0, -0.014),
+            relief=1, command=self._do_logout,
         )
 
-        # Fetch builds in background
+        # ── Section header + New Build ──────────────────────────────────────
+        DirectLabel(
+            text="My Builds",
+            text_fg=_RS_WHITE, text_scale=0.038,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(-1.62, 0, 0.757),
+        )
+        DirectButton(
+            text="+ New Build",
+            text_fg=_RS_WHITE, text_scale=0.030,
+            frameColor=_RS_ORANGE,
+            frameSize=(-0.130, 0.130, -0.034, 0.034),
+            parent=bg, pos=(1.55, 0, 0.757),
+            command=self._enter_studio, relief=1,
+        )
+        DirectButton(
+            text="Upload T-Shirt",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.130, 0.130, -0.030, 0.030),
+            parent=bg, pos=(1.55, 0, 0.690),
+            command=self._show_upload_tshirt_dialog, relief=1,
+        )
+
+        # ── Build list ──────────────────────────────────────────────────────
+        self._build_list_frame = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-1.70, 1.70, -1.60, 0.66),
+            parent=bg,
+        )
+        self._build_list_status = DirectLabel(
+            text="Loading…",
+            text_fg=_RS_GRAY, text_scale=0.034,
+            frameColor=(0, 0, 0, 0),
+            parent=self._build_list_frame, pos=(0, 0, 0.2),
+        )
+
         threading.Thread(target=self._fetch_builds_thread, daemon=True).start()
 
     def _fetch_builds_thread(self):
@@ -658,168 +747,272 @@ class LoginScreenMixin:
         frame = self._build_list_frame
         if not builds:
             DirectLabel(
-                text="No saves yet" if not err else f"Error: {err}",
-                text_fg=TEXT_D, text_scale=0.034,
+                text="No saves yet." if not err else f"Error: {err}",
+                text_fg=_RS_GRAY, text_scale=0.034,
                 frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(0, 0, -0.06),
+                parent=frame, pos=(0, 0, 0.2),
             )
             return task.done
 
-        ROW_H = 0.072
-        MED_L = (0.17, 0.19, 0.26, 1.0)
-        PUB_C = (0.14, 0.42, 0.22, 1.0)
-        for i, build in enumerate(builds[:5]):
-            y = -(i + 0.5) * ROW_H
+        ROW_H  = 0.096
+        ROW_BG = (0.70, 0.65, 0.84, 1.0)
+        PUB_C  = (0.14, 0.55, 0.25, 1.0)
+        for i, build in enumerate(builds[:8]):
+            y      = -(i + 0.5) * ROW_H + 0.60
             is_pub = bool(build.get("published", 0))
             DirectFrame(
-                frameColor=MED_L,
-                frameSize=(-0.74, 0.74, -ROW_H / 2, ROW_H / 2),
+                frameColor=ROW_BG,
+                frameSize=(-1.65, 1.65, -ROW_H / 2 + 0.006, ROW_H / 2 - 0.006),
                 parent=frame, pos=(0, 0, y),
             )
             name = build["name"]
-            if len(name) > 16:
-                name = name[:14] + "…"
-            ts = datetime.datetime.fromtimestamp(build["updated_at"]).strftime("%b %d")
+            if len(name) > 36:
+                name = name[:34] + "…"
+            ts = datetime.datetime.fromtimestamp(build["updated_at"]).strftime("%b %d, %Y")
             DirectLabel(
-                text=f"{name}  {ts}",
-                text_fg=TEXT, text_scale=0.028,
+                text=name,
+                text_fg=_RS_WHITE, text_scale=0.030,
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
-                parent=frame, pos=(-0.70, 0, y - 0.010),
+                parent=frame, pos=(-1.60, 0, y + 0.018),
+            )
+            DirectLabel(
+                text=ts,
+                text_fg=_RS_GRAY, text_scale=0.022,
+                text_align=TextNode.ALeft,
+                frameColor=(0, 0, 0, 0),
+                parent=frame, pos=(-1.60, 0, y - 0.020),
             )
             DirectButton(
                 text="Settings",
-                text_fg=TEXT, text_scale=0.022,
-                frameColor=(0.22, 0.22, 0.34, 1.0),
-                frameSize=(-0.058, 0.058, -0.022, 0.022),
-                parent=frame, pos=(0.12, 0, y),
+                text_fg=_RS_WHITE, text_scale=0.024,
+                frameColor=_RS_BORDER,
+                frameSize=(-0.080, 0.080, -0.028, 0.028),
+                parent=frame, pos=(0.72, 0, y),
                 command=self._open_game_settings,
                 extraArgs=[build["id"], build["name"]], relief=1,
             )
             DirectButton(
-                text="Unpub" if is_pub else "Pub",
-                text_fg=TEXT, text_scale=0.022,
-                frameColor=PUB_C if is_pub else BTN,
-                frameSize=(-0.050, 0.050, -0.022, 0.022),
-                parent=frame, pos=(0.30, 0, y),
+                text="Unpublish" if is_pub else "Publish",
+                text_fg=_RS_WHITE, text_scale=0.022,
+                frameColor=PUB_C if is_pub else _RS_BORDER,
+                frameSize=(-0.090, 0.090, -0.028, 0.028),
+                parent=frame, pos=(1.02, 0, y),
                 command=self._on_toggle_publish,
                 extraArgs=[build["id"], not is_pub], relief=1,
             )
             DirectButton(
                 text="Load",
-                text_fg=TEXT, text_scale=0.022,
-                frameColor=SEL,
-                frameSize=(-0.050, 0.050, -0.022, 0.022),
-                parent=frame, pos=(0.46, 0, y),
+                text_fg=_RS_WHITE, text_scale=0.024,
+                frameColor=_RS_ORANGE,
+                frameSize=(-0.065, 0.065, -0.028, 0.028),
+                parent=frame, pos=(1.30, 0, y),
                 command=self._on_load_build,
                 extraArgs=[build["id"]], relief=1,
             )
             DirectButton(
-                text="Del",
-                text_fg=TEXT, text_scale=0.022,
-                frameColor=(0.45, 0.14, 0.14, 1.0),
-                frameSize=(-0.044, 0.044, -0.022, 0.022),
-                parent=frame, pos=(0.60, 0, y),
+                text="Delete",
+                text_fg=_RS_WHITE, text_scale=0.024,
+                frameColor=_RS_RED,
+                frameSize=(-0.075, 0.075, -0.028, 0.028),
+                parent=frame, pos=(1.56, 0, y),
                 command=self._on_delete_build,
                 extraArgs=[build["id"]], relief=1,
             )
         return task.done
 
+    def _browse_for_thumbnail(self):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            path = filedialog.askopenfilename(
+                parent=root,
+                title="Select thumbnail image",
+                filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp"), ("All files", "*.*")],
+            )
+            root.destroy()
+            return path or ""
+        except Exception as e:
+            print(f"[BROWSE_THUMB] error: {e}", flush=True)
+            return ""
+
     def _open_game_settings(self, build_id, build_name):
-        """Open the game settings popup for thumbnail + description."""
         existing = getattr(self, "_settings_popup", None)
         if existing:
             try:
                 existing.destroy()
             except Exception:
                 pass
+
+        _RS_BG     = (0.78, 0.75, 0.88, 1.0)
+        _RS_CARD   = (0.84, 0.82, 0.93, 1.0)
+        _RS_ROW    = (0.70, 0.65, 0.84, 1.0)
+        _RS_ORANGE = (0.58, 0.18, 0.82, 1.0)
+        _RS_WHITE  = (0.00, 0.00, 0.00, 1.0)
+        _RS_GRAY   = (0.00, 0.00, 0.00, 1.0)
+        _RS_GREEN  = (0.22, 0.75, 0.40, 1.0)
+        _RS_RED    = (0.82, 0.18, 0.18, 1.0)
+
         overlay = DirectFrame(
-            frameColor=(0, 0, 0, 0.80),
+            frameColor=(0, 0, 0, 0.78),
             frameSize=(-3, 3, -3, 3),
             sortOrder=80,
+            state='normal',
         )
         self._settings_popup = overlay
+
         card = DirectFrame(
-            frameColor=DARK,
-            frameSize=(-0.72, 0.72, -0.52, 0.52),
+            frameColor=_RS_CARD,
+            frameSize=(-0.68, 0.68, -0.50, 0.50),
             parent=overlay, sortOrder=81,
         )
+
+        # Title
         DirectLabel(
-            text=f"Game Settings — {build_name[:22]}",
-            text_fg=TEXT, text_scale=0.038,
+            text=f"Settings  -  {build_name[:40]}",
+            text_fg=_RS_WHITE, text_scale=0.036,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, 0.40),
+            parent=card, pos=(0, 0, 0.38),
         )
-        # Description label + entry
+
+        # Divider line
+        DirectFrame(
+            frameColor=(0.22, 0.20, 0.32, 1.0),
+            frameSize=(-0.60, 0.60, -0.002, 0.002),
+            parent=card, pos=(0, 0, 0.28),
+        )
+
+        # ── Description ──────────────────────────────────────────────────────
         DirectLabel(
             text="Description",
-            text_fg=TEXT_D, text_scale=0.030,
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(-0.48, 0, 0.24),
+            parent=card, pos=(-0.58, 0, 0.19),
+            text_align=TextNode.ALeft,
+        )
+        desc_bg = DirectFrame(
+            frameColor=_RS_ROW,
+            frameSize=(-0.60, 0.60, -0.042, 0.042),
+            parent=card, pos=(0, 0, 0.11),
         )
         desc_entry = DirectEntry(
-            text_fg=TEXT, text_scale=0.030,
-            frameColor=MED,
-            width=28, numLines=1,
-            parent=card, pos=(-0.68, 0, 0.16),
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=40, numLines=1,
+            parent=desc_bg, pos=(-0.57, 0, -0.014),
             initialText="",
         )
-        # Thumbnail path label + entry
+
+        # ── Thumbnail ────────────────────────────────────────────────────────
         DirectLabel(
-            text="Thumbnail path (PNG/JPG, 1920×1080)",
-            text_fg=TEXT_D, text_scale=0.026,
+            text="Thumbnail  (PNG / JPG, 1920x1080)",
+            text_fg=_RS_GRAY, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(-0.28, 0, 0.04),
+            parent=card, pos=(-0.58, 0, -0.04),
+            text_align=TextNode.ALeft,
         )
-        thumb_entry = DirectEntry(
-            text_fg=TEXT, text_scale=0.028,
-            frameColor=MED,
-            width=30, numLines=1,
-            parent=card, pos=(-0.68, 0, -0.04),
-            initialText="",
-        )
-        DirectLabel(
-            text="Paste the full file path to your image.",
-            text_fg=TEXT_D, text_scale=0.024,
+
+        self._pending_thumb_path = ""
+        self._current_thumb_b64  = ""
+
+        thumb_lbl = DirectLabel(
+            text="No new file selected  (existing thumbnail kept)",
+            text_fg=_RS_GRAY, text_scale=0.024,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, -0.14),
+            parent=card, pos=(-0.58, 0, -0.15),
+            text_align=TextNode.ALeft,
         )
+
+        def _browse():
+            path = self._browse_for_thumbnail()
+            if path:
+                self._pending_thumb_path = path
+                short = path.replace("\\", "/").split("/")[-1]
+                if len(short) > 44:
+                    short = "..." + short[-41:]
+                thumb_lbl["text"] = short
+                thumb_lbl["text_fg"] = _RS_WHITE
+
+        DirectButton(
+            text="Browse...",
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=_RS_ROW,
+            frameSize=(-0.13, 0.13, -0.036, 0.036),
+            parent=card, pos=(-0.46, 0, -0.10),
+            command=_browse, relief=1,
+        )
+
+        # Status
         self._settings_status = DirectLabel(
             text="",
-            text_fg=GREEN, text_scale=0.028,
+            text_fg=_RS_GREEN, text_scale=0.026,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(0, 0, -0.24),
+            parent=card, pos=(0, 0, -0.26),
         )
-        # Load existing settings in background
+
+        # Load existing settings
         def _load():
             res, _ = auth_client.get_game_settings(self._session_token, build_id)
             if res:
                 def _apply(task, r=res):
+                    self._current_thumb_b64 = r.get("thumbnail", "")
                     if desc_entry and not desc_entry.isEmpty():
                         desc_entry.set(r.get("description", ""))
+                    if self._current_thumb_b64 and thumb_lbl and not thumb_lbl.isEmpty():
+                        thumb_lbl["text"] = "Existing thumbnail loaded"
+                        thumb_lbl["text_fg"] = _RS_GREEN
                     return task.done
                 self.taskMgr.doMethodLater(0, _apply, "_applySettings", appendTask=True)
         threading.Thread(target=_load, daemon=True).start()
 
         def _save():
             desc_text  = desc_entry.get().strip()
-            thumb_path = thumb_entry.get().strip()
-            thumb_b64  = ""
+            thumb_path = self._pending_thumb_path
             if thumb_path:
                 try:
-                    import base64
-                    with open(thumb_path, "rb") as f:
+                    import base64, tempfile, os
+                    from panda3d.core import PNMImage, Filename as _Fn
+                    img = PNMImage()
+                    if not img.read(_Fn.fromOsSpecific(thumb_path)):
+                        raise IOError(f"Cannot read image: {thumb_path}")
+                    # Strip alpha so the JPEG is always opaque RGB
+                    if img.hasAlpha():
+                        img.removeAlpha()
+                    # Resize to max 640×360 to keep uploads small
+                    MAX_W, MAX_H = 640, 360
+                    if img.getXSize() > MAX_W or img.getYSize() > MAX_H:
+                        ratio = min(MAX_W / img.getXSize(), MAX_H / img.getYSize())
+                        nw = max(1, int(img.getXSize() * ratio))
+                        nh = max(1, int(img.getYSize() * ratio))
+                        small = PNMImage(nw, nh)
+                        small.quickFilterFrom(img)
+                        img = small
+                    tmp = tempfile.mktemp(suffix=".jpg")
+                    img.write(_Fn.fromOsSpecific(tmp))
+                    with open(tmp, "rb") as f:
                         thumb_b64 = base64.b64encode(f.read()).decode()
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
                 except Exception as e:
                     lbl = self._settings_status
                     if lbl and not lbl.isEmpty():
                         lbl["text"] = f"Image error: {e}"
-                        lbl["text_fg"] = RED
+                        lbl["text_fg"] = _RS_RED
                     return
+            else:
+                # No new file — preserve whatever the server already has
+                thumb_b64 = self._current_thumb_b64
+
             lbl = self._settings_status
             if lbl and not lbl.isEmpty():
-                lbl["text"] = "Saving…"
-                lbl["text_fg"] = TEXT_D
+                lbl["text"] = "Saving..."
+                lbl["text_fg"] = _RS_GRAY
+
             def worker():
                 res, err = auth_client.put_game_settings(
                     self._session_token, build_id, thumb_b64, desc_text)
@@ -827,25 +1020,28 @@ class LoginScreenMixin:
                     l = getattr(self, "_settings_status", None)
                     if l and not l.isEmpty():
                         l["text"] = "Saved!" if ok else f"Error: {err}"
-                        l["text_fg"] = GREEN if ok else RED
+                        l["text_fg"] = _RS_GREEN if ok else _RS_RED
+                    if ok:
+                        self._refresh_build_list(task)
                     return task.done
                 self.taskMgr.doMethodLater(0, _done, "_settingsDone", appendTask=True)
             threading.Thread(target=worker, daemon=True).start()
 
+        # Buttons row
         DirectButton(
             text="Save",
-            text_fg=TEXT, text_scale=0.036,
-            frameColor=SEL,
-            frameSize=(-0.14, 0.14, -0.036, 0.036),
+            text_fg=_RS_WHITE, text_scale=0.034,
+            frameColor=_RS_ORANGE,
+            frameSize=(-0.18, 0.18, -0.040, 0.040),
             parent=card, pos=(-0.22, 0, -0.38),
             command=_save, relief=1,
         )
         DirectButton(
             text="Cancel",
-            text_fg=TEXT_D, text_scale=0.034,
-            frameColor=BTN,
-            frameSize=(-0.12, 0.12, -0.034, 0.034),
-            parent=card, pos=(0.24, 0, -0.38),
+            text_fg=_RS_GRAY, text_scale=0.030,
+            frameColor=_RS_ROW,
+            frameSize=(-0.15, 0.15, -0.036, 0.036),
+            parent=card, pos=(0.26, 0, -0.38),
             command=lambda: [overlay.destroy(), setattr(self, "_settings_popup", None)],
             relief=1,
         )
@@ -889,9 +1085,571 @@ class LoginScreenMixin:
         self._build_main_menu()
         return task.done
 
+    # ── Shop screen ────────────────────────────────────────────────────────
+
+    def _build_shop_screen(self):
+        self._cleanup_avatar_items_tab()
+        if self._main_menu_ui:
+            self._main_menu_ui.destroy()
+
+        self._shop_owned_ids = getattr(self, "_shop_owned_ids", set())
+        self._shop_item_popup = None
+
+        bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
+        self._main_menu_ui = bg
+
+        # ── Top nav bar (Shop tab active) ──────────────────────────────
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=bg, pos=(0, 0, 0.908),
+        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        for i, (tab_text, tab_cmd) in enumerate([
+            ("Games",  self._build_browse_screen),
+            ("Avatar", self._build_avatar_screen),
+            ("Shop",   self._build_shop_screen),
+            ("Build",  self._build_main_menu),
+        ]):
+            is_active = (i == 2)
+            DirectButton(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.034,
+                frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
+                frameSize=(-0.10, 0.10, -0.052, 0.052),
+                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                relief=1 if is_active else 0,
+                command=tab_cmd,
+            )
+        DirectLabel(
+            text=self._session_username or "",
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            parent=nav, pos=(1.20, 0, -0.014),
+        )
+        DirectButton(
+            text="Log Out",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.082, 0.082, -0.026, 0.026),
+            parent=nav, pos=(1.55, 0, -0.014),
+            relief=1, command=self._do_logout,
+        )
+
+        # ── Toolbar ────────────────────────────────────────────────────
+        _TOOL_BG = (0.62, 0.55, 0.78, 1.0)
+        DirectFrame(
+            frameColor=_TOOL_BG,
+            frameSize=(-2.5, 2.5, -0.038, 0.038),
+            parent=bg, pos=(0, 0, 0.802),
+        )
+
+        # ── Grid container with Loading label ──────────────────────────
+        self._shop_grid_parent = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-2.0, 2.0, -1.80, 0.72),
+            parent=bg,
+        )
+        self._shop_loading_lbl = DirectLabel(
+            text="Loading...",
+            text_fg=_RS_GRAY, text_scale=0.040,
+            frameColor=(0, 0, 0, 0),
+            parent=self._shop_grid_parent, pos=(0, 0, 0),
+        )
+
+        # ── Pagination ──────────────────────────────────────────────────
+        DirectButton(
+            text="< Prev",
+            text_fg=_RS_WHITE, text_scale=0.030,
+            frameColor=_RS_NAV,
+            frameSize=(-0.070, 0.070, -0.034, 0.034),
+            parent=bg, pos=(-0.24, 0, -0.913),
+            relief=1,
+        )
+        DirectLabel(
+            text="Page 1",
+            text_fg=_RS_GRAY, text_scale=0.030,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(0, 0, -0.913),
+        )
+        DirectButton(
+            text="Next >",
+            text_fg=_RS_WHITE, text_scale=0.030,
+            frameColor=_RS_NAV,
+            frameSize=(-0.070, 0.070, -0.034, 0.034),
+            parent=bg, pos=(0.24, 0, -0.913),
+            relief=1,
+        )
+
+        threading.Thread(target=self._fetch_shop_items_thread, daemon=True).start()
+
+    def _fetch_shop_items_thread(self):
+        items_result, items_err = auth_client.list_shop_items()
+        items = (items_result or {}).get("items", [])
+        owned_result, _ = auth_client.get_owned_items(self._session_token)
+        owned = {it["id"] for it in (owned_result or {}).get("items", [])}
+        self.taskMgr.doMethodLater(
+            0, self._draw_shop_grid_task, "_drawShopGrid",
+            extraArgs=[items, items_err, owned], appendTask=True,
+        )
+
+    def _draw_shop_grid_task(self, items, err, owned, task):
+        self._shop_owned_ids = owned
+        lbl = getattr(self, "_shop_loading_lbl", None)
+        if lbl and not lbl.isEmpty():
+            lbl.destroy()
+        frame = getattr(self, "_shop_grid_parent", None)
+        if not frame or frame.isEmpty():
+            return task.done
+        if not items:
+            DirectLabel(
+                text="No items in the shop yet." if not err else f"Error: {err}",
+                text_fg=_RS_GRAY, text_scale=0.034,
+                frameColor=(0, 0, 0, 0),
+                parent=frame, pos=(0, 0, 0),
+            )
+            return task.done
+        self._draw_shop_grid(items, frame)
+        return task.done
+
+    def _draw_shop_grid(self, items, frame):
+        _CARD_BG  = (0.84, 0.81, 0.93, 1.0)
+        _NAME_COL = _RS_WHITE
+        _PRICE_COL = _RS_GREEN
+        _FREE_COL  = _RS_GREEN
+
+        total_w  = _SHOP_COLS * _SHOP_CW + (_SHOP_COLS - 1) * _SHOP_GAPX
+        left_cx  = -total_w / 2 + _SHOP_CW / 2
+        GRID_TOP = 0.68
+
+        THUMB_CY = _SHOP_CH / 2 - _SHOP_CTH / 2
+        NAME_Z   = _SHOP_CH / 2 - _SHOP_CTH - 0.056
+        PRICE_Z  = -_SHOP_CH / 2 + 0.038
+
+        for idx, item in enumerate(items[:_SHOP_PAGE]):
+            col = idx % _SHOP_COLS
+            row = idx // _SHOP_COLS
+            cx  = left_cx + col * (_SHOP_CW + _SHOP_GAPX)
+            cz  = GRID_TOP - _SHOP_CH / 2 - row * (_SHOP_CH + _SHOP_GAPY)
+
+            card = DirectButton(
+                frameColor=_CARD_BG,
+                frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CH/2, _SHOP_CH/2),
+                parent=frame, pos=(cx, 0, cz),
+                sortOrder=5, relief=1,
+                command=self._show_shop_item_popup,
+                extraArgs=[item],
+            )
+            # Thumbnail placeholder
+            tint_idx = item.get("id", idx) % len(_THUMB_TINTS)
+            DirectFrame(
+                frameColor=_THUMB_TINTS[tint_idx],
+                frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CTH/2, _SHOP_CTH/2),
+                parent=card, pos=(0, 0, THUMB_CY),
+                sortOrder=6,
+            )
+            # Item name
+            name = item.get("name", "")
+            DirectLabel(
+                text=(name[:13] + "...") if len(name) > 14 else name,
+                text_fg=_NAME_COL, text_scale=0.022,
+                frameColor=(0, 0, 0, 0),
+                parent=card, pos=(0, 0, NAME_Z),
+                sortOrder=6,
+            )
+            # Price
+            price = item.get("price", 0)
+            if price == 0:
+                price_txt = "Free"
+                price_col = _FREE_COL
+            else:
+                price_txt = f"C {price}"
+                price_col = _PRICE_COL
+            DirectLabel(
+                text=price_txt,
+                text_fg=price_col, text_scale=0.022,
+                frameColor=(0, 0, 0, 0),
+                parent=card, pos=(0, 0, PRICE_Z),
+                sortOrder=6,
+            )
+
+    def _show_shop_item_popup(self, item_summary):
+        existing = getattr(self, "_shop_item_popup", None)
+        if existing:
+            try:
+                existing.destroy()
+            except Exception:
+                pass
+        self._shop_item_popup = None
+
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.82),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=500,
+            state='normal',
+        )
+        self._shop_item_popup = overlay
+
+        HW, HH = 1.10, 0.54
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-HW, HW, -HH, HH),
+            parent=overlay, sortOrder=501,
+        )
+
+        # Close button
+        DirectButton(
+            text="X",
+            text_fg=_RS_WHITE, text_scale=0.034,
+            frameColor=_RS_RED,
+            frameSize=(-0.038, 0.038, -0.038, 0.038),
+            parent=card, pos=(HW - 0.056, 0, HH - 0.056),
+            relief=1,
+            command=lambda: [overlay.destroy(), setattr(self, "_shop_item_popup", None)],
+        )
+
+        # Left half — image placeholder
+        img_frame = DirectFrame(
+            frameColor=_THUMB_TINTS[item_summary.get("id", 0) % len(_THUMB_TINTS)],
+            frameSize=(-0.50, 0.50, -0.42, 0.42),
+            parent=card, pos=(-0.54, 0, 0),
+        )
+
+        # Right half — info
+        RX = 0.18
+        name = item_summary.get("name", "")
+        DirectLabel(
+            text=name,
+            text_fg=_RS_WHITE, text_scale=0.036,
+            text_align=TextNode.ALeft,
+            text_wordwrap=20,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(RX, 0, HH - 0.14),
+        )
+        creator = item_summary.get("username", "")
+        DirectLabel(
+            text=f"by {creator}",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(RX, 0, HH - 0.24),
+        )
+        desc = (item_summary.get("description") or "").strip()
+        if desc:
+            DirectLabel(
+                text=(desc[:120] + "...") if len(desc) > 120 else desc,
+                text_fg=_RS_GRAY, text_scale=0.024,
+                text_align=TextNode.ALeft,
+                text_wordwrap=24,
+                frameColor=(0, 0, 0, 0),
+                parent=card, pos=(RX, 0, HH - 0.36),
+            )
+        price = item_summary.get("price", 0)
+        price_str = "Free" if price == 0 else f"C {price}"
+        DirectLabel(
+            text=price_str,
+            text_fg=_RS_GREEN, text_scale=0.030,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(RX, 0, -HH + 0.16),
+        )
+
+        item_id = item_summary.get("id")
+        owned = item_id in getattr(self, "_shop_owned_ids", set())
+
+        if owned:
+            self._shop_popup_get_btn = DirectLabel(
+                text="Owned",
+                text_fg=_RS_GREEN, text_scale=0.032,
+                frameColor=(0, 0, 0, 0),
+                parent=card, pos=(RX + 0.18, 0, -HH + 0.06),
+            )
+        else:
+            self._shop_popup_get_btn = DirectButton(
+                text="Get Item",
+                text_fg=_RS_WHITE, text_scale=0.032,
+                frameColor=_RS_ORANGE,
+                frameSize=(-0.14, 0.14, -0.040, 0.040),
+                parent=card, pos=(RX + 0.18, 0, -HH + 0.06),
+                relief=1,
+                command=self._buy_shop_item,
+                extraArgs=[item_id],
+            )
+
+        # Fetch full item with image in background
+        def _fetch_image():
+            full, _ = auth_client.get_shop_item(item_id)
+            if full and full.get("image_data"):
+                def _apply(task, b64=full["image_data"], frm=img_frame):
+                    if frm and not frm.isEmpty():
+                        self._apply_thumbnail_texture(frm, b64)
+                    return task.done
+                self.taskMgr.doMethodLater(0, _apply, "_applyShopImg", appendTask=True)
+        threading.Thread(target=_fetch_image, daemon=True).start()
+
+    def _buy_shop_item(self, item_id):
+        token = self._session_token
+        def worker():
+            result, err = auth_client.buy_shop_item(token, item_id)
+            def _done(task, ok=(result is not None), err=err):
+                if ok:
+                    self._shop_owned_ids.add(item_id)
+                    self._show_toast("Added to your items!", GREEN)
+                    btn = getattr(self, "_shop_popup_get_btn", None)
+                    if btn and not btn.isEmpty():
+                        btn.destroy()
+                        self._shop_popup_get_btn = None
+                    popup = getattr(self, "_shop_item_popup", None)
+                    if popup and not popup.isEmpty():
+                        owned_lbl = DirectLabel(
+                            text="Owned",
+                            text_fg=_RS_GREEN, text_scale=0.032,
+                            frameColor=(0, 0, 0, 0),
+                            parent=popup.getChild(0),
+                            pos=(0.36, 0, -0.48),
+                        )
+                else:
+                    self._show_toast(f"Error: {err}", RED)
+                return task.done
+            self.taskMgr.doMethodLater(0, _done, "_buyDone", appendTask=True)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_upload_tshirt_dialog(self):
+        existing = getattr(self, "_upload_tshirt_popup", None)
+        if existing:
+            try:
+                existing.destroy()
+            except Exception:
+                pass
+        self._upload_tshirt_popup = None
+        self._upload_tshirt_path  = ""
+
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.82),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=500,
+            state='normal',
+        )
+        self._upload_tshirt_popup = overlay
+
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-0.70, 0.70, -0.54, 0.54),
+            parent=overlay, sortOrder=501,
+        )
+
+        DirectLabel(
+            text="Upload T-Shirt",
+            text_fg=_RS_WHITE, text_scale=0.036,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.42),
+        )
+
+        # Image picker
+        img_lbl = DirectLabel(
+            text="No file chosen",
+            text_fg=_RS_GRAY, text_scale=0.024,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.10, 0, 0.28),
+        )
+
+        def _browse_img():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                path = filedialog.askopenfilename(
+                    parent=root,
+                    title="Select T-Shirt image",
+                    filetypes=[("Image files", "*.png *.jpg *.jpeg"), ("All files", "*.*")],
+                )
+                root.destroy()
+                if path:
+                    self._upload_tshirt_path = path
+                    short = path.replace("\\", "/").split("/")[-1]
+                    if len(short) > 30:
+                        short = "..." + short[-27:]
+                    img_lbl["text"] = short
+                    img_lbl["text_fg"] = _RS_WHITE
+            except Exception as e:
+                print(f"[UPLOAD_TSHIRT] browse error: {e}", flush=True)
+
+        DirectButton(
+            text="Choose Image",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.13, 0.13, -0.030, 0.030),
+            parent=card, pos=(-0.50, 0, 0.28),
+            relief=1, command=_browse_img,
+        )
+
+        # Name field
+        DirectLabel(
+            text="Name",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.64, 0, 0.12),
+        )
+        name_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.62, 0.62, -0.036, 0.036),
+            parent=card, pos=(0, 0, 0.055),
+        )
+        name_entry = DirectEntry(
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=42, numLines=1,
+            parent=name_bg, pos=(-0.60, 0, -0.012),
+        )
+
+        # Description field
+        DirectLabel(
+            text="Description",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.64, 0, -0.06),
+        )
+        desc_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.62, 0.62, -0.036, 0.036),
+            parent=card, pos=(0, 0, -0.125),
+        )
+        desc_entry = DirectEntry(
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=42, numLines=1,
+            parent=desc_bg, pos=(-0.60, 0, -0.012),
+        )
+
+        # Price field
+        DirectLabel(
+            text="Price (0 = free)",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.64, 0, -0.24),
+        )
+        price_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.62, 0.62, -0.036, 0.036),
+            parent=card, pos=(0, 0, -0.305),
+        )
+        price_entry = DirectEntry(
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=10, numLines=1,
+            parent=price_bg, pos=(-0.60, 0, -0.012),
+            initialText="0",
+        )
+
+        # Status label
+        upload_status = DirectLabel(
+            text="",
+            text_fg=_RS_GREEN, text_scale=0.026,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, -0.41),
+        )
+
+        def _do_upload():
+            path = self._upload_tshirt_path
+            if not path:
+                upload_status["text"] = "Choose an image first."
+                upload_status["text_fg"] = _RS_RED
+                return
+            item_name = name_entry.get().strip()
+            if not item_name:
+                upload_status["text"] = "Enter a name."
+                upload_status["text_fg"] = _RS_RED
+                return
+            item_desc = desc_entry.get().strip()
+            try:
+                item_price = max(0, int(price_entry.get().strip() or "0"))
+            except ValueError:
+                item_price = 0
+            upload_status["text"] = "Encoding..."
+            upload_status["text_fg"] = _RS_GRAY
+
+            def worker():
+                try:
+                    import base64, tempfile, os as _os
+                    from panda3d.core import PNMImage, Filename as _Fn
+                    img = PNMImage()
+                    img.read(_Fn.fromOsSpecific(path))
+                    if img.getXSize() > 256 or img.getYSize() > 256:
+                        target = 256
+                        scaled = PNMImage(target, target)
+                        scaled.gaussianFilterFrom(1.0, img)
+                        img = scaled
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                        tmp = tf.name
+                    img.write(_Fn.fromOsSpecific(tmp))
+                    with open(tmp, 'rb') as f:
+                        b64 = base64.b64encode(f.read()).decode()
+                    _os.unlink(tmp)
+                except Exception as e:
+                    def _err(task, msg=str(e)):
+                        upload_status["text"] = f"Image error: {msg}"
+                        upload_status["text_fg"] = _RS_RED
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _err, "_uploadErr", appendTask=True)
+                    return
+                result, err = auth_client.upload_shop_item(
+                    self._session_token, item_name, item_desc, item_price, b64)
+                def _done(task, ok=(result is not None), err=err):
+                    if ok:
+                        upload_status["text"] = "Uploaded!"
+                        upload_status["text_fg"] = _RS_GREEN
+                        self._show_toast("T-Shirt uploaded to shop!", GREEN)
+                    else:
+                        upload_status["text"] = f"Error: {err}"
+                        upload_status["text_fg"] = _RS_RED
+                    return task.done
+                self.taskMgr.doMethodLater(0, _done, "_uploadDone", appendTask=True)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _cancel():
+            p = getattr(self, "_upload_tshirt_popup", None)
+            if p:
+                try:
+                    p.destroy()
+                except Exception:
+                    pass
+            self._upload_tshirt_popup = None
+
+        DirectButton(
+            text="Upload to Shop",
+            text_fg=_RS_WHITE, text_scale=0.030,
+            frameColor=_RS_ORANGE,
+            frameSize=(-0.18, 0.18, -0.038, 0.038),
+            parent=card, pos=(-0.22, 0, -0.48),
+            relief=1, command=_do_upload,
+        )
+        DirectButton(
+            text="Cancel",
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.12, 0.12, -0.034, 0.034),
+            parent=card, pos=(0.34, 0, -0.48),
+            relief=1, command=_cancel,
+        )
+
     # ── Browse screen ──────────────────────────────────────────────────────
 
     def _build_browse_screen(self):
+        self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
         self._browse_page       = 0
@@ -907,15 +1665,18 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.068, 0.068),
             parent=bg, pos=(0, 0, 0.908),
         )
-        DirectLabel(
-            text="PhoenixHill",
-            text_fg=_RS_WHITE, text_scale=0.044,
-            frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(-1.84, 0, -0.018),
-        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        # Tabs centred around x=0
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",  self._build_browse_screen),
             ("Avatar", self._build_avatar_screen),
+            ("Shop",   self._build_shop_screen),
             ("Build",  self._build_main_menu),
         ]):
             is_active = (i == 0)
@@ -925,7 +1686,7 @@ class LoginScreenMixin:
                 text_scale=0.034,
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
                 frameSize=(-0.10, 0.10, -0.052, 0.052),
-                parent=nav, pos=(-0.88 + i * 0.34, 0, -0.008),
+                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
@@ -933,14 +1694,14 @@ class LoginScreenMixin:
             text=self._session_username or "",
             text_fg=_RS_GRAY, text_scale=0.028,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.52, 0, -0.014),
+            parent=nav, pos=(1.20, 0, -0.014),
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.84, 0, -0.014),
+            parent=nav, pos=(1.55, 0, -0.014),
             relief=1, command=self._do_logout,
         )
 
@@ -975,11 +1736,11 @@ class LoginScreenMixin:
 
         # ── Pagination ─────────────────────────────────────────────────────
         self._prev_page_btn = DirectButton(
-            text="◄",
-            text_fg=_RS_WHITE, text_scale=0.038,
+            text="< Prev",
+            text_fg=_RS_WHITE, text_scale=0.030,
             frameColor=_RS_NAV,
-            frameSize=(-0.052, 0.052, -0.034, 0.034),
-            parent=bg, pos=(-0.20, 0, -0.913),
+            frameSize=(-0.070, 0.070, -0.034, 0.034),
+            parent=bg, pos=(-0.24, 0, -0.913),
             relief=1, command=self._browse_prev_page,
         )
         self._page_lbl = DirectLabel(
@@ -989,11 +1750,11 @@ class LoginScreenMixin:
             parent=bg, pos=(0, 0, -0.913),
         )
         self._next_page_btn = DirectButton(
-            text="►",
-            text_fg=_RS_WHITE, text_scale=0.038,
+            text="Next >",
+            text_fg=_RS_WHITE, text_scale=0.030,
             frameColor=_RS_NAV,
-            frameSize=(-0.052, 0.052, -0.034, 0.034),
-            parent=bg, pos=(0.20, 0, -0.913),
+            frameSize=(-0.070, 0.070, -0.034, 0.034),
+            parent=bg, pos=(0.24, 0, -0.913),
             relief=1, command=self._browse_next_page,
         )
 
@@ -1073,7 +1834,7 @@ class LoginScreenMixin:
                 tint  = _THUMB_TINTS[build.get("id", idx) % len(_THUMB_TINTS)]
                 online = build.get("online", 0)
                 name   = build["name"]
-                short  = (name[:12] + "…") if len(name) > 14 else name
+                short  = (name[:12] + "…") if len(name) > 14 else name  # watermark only
 
                 card = DirectButton(
                     frameColor=_RS_CARD,
@@ -1103,9 +1864,10 @@ class LoginScreenMixin:
                     )
                 # Game name below thumbnail
                 DirectLabel(
-                    text=short,
+                    text=name,
                     text_fg=_RS_WHITE, text_scale=0.026,
                     text_align=TextNode.ALeft,
+                    text_wordwrap=19,
                     frameColor=(0, 0, 0, 0),
                     parent=card, pos=(-_CARD_W/2 + 0.026, 0, NAME_Y),
                     sortOrder=2,
@@ -1122,10 +1884,10 @@ class LoginScreenMixin:
                     parent=card, pos=(-_CARD_W/2 + 0.026, 0, SUB_Y),
                     sortOrder=2,
                 )
-                # Online count dot
+                # Online count
                 count_col = _RS_GREEN if online else (_RS_GRAY[0], _RS_GRAY[1], _RS_GRAY[2], 0.5)
                 DirectLabel(
-                    text=f"● {online}" if online else "●",
+                    text=f"{online} online" if online else "empty",
                     text_fg=count_col, text_scale=0.020,
                     text_align=TextNode.ARight,
                     frameColor=(0, 0, 0, 0),
@@ -1153,10 +1915,19 @@ class LoginScreenMixin:
 
     def _show_game_info_popup(self, build):
         self._close_game_info_popup()
+        # Record visit when the popup opens — once per account, fire-and-forget
+        _tok = getattr(self, "_session_token", "")
+        _bid = build.get("id")
+        if _tok and _bid:
+            threading.Thread(
+                target=lambda: auth_client.post_visit(_tok, _bid),
+                daemon=True,
+            ).start()
         overlay = DirectFrame(
             frameColor=(0, 0, 0, 0.82),
             frameSize=(-3, 3, -3, 3),
             sortOrder=60,
+            state='normal',
         )
         self._game_popup = overlay
 
@@ -1169,8 +1940,8 @@ class LoginScreenMixin:
         )
         # Close button
         DirectButton(
-            text="✕",
-            text_fg=_RS_WHITE, text_scale=0.036,
+            text="X",
+            text_fg=_RS_WHITE, text_scale=0.034,
             frameColor=_RS_RED,
             frameSize=(-0.038, 0.038, -0.038, 0.038),
             parent=card, pos=(HW - 0.056, 0, HH - 0.056),
@@ -1191,7 +1962,7 @@ class LoginScreenMixin:
             self._apply_thumbnail_texture(thumb_frame, build["thumbnail"])
         PLAY_Y = TH_CY - TH_H / 2 - 0.080
         DirectButton(
-            text="▶  Play",
+            text="Play",
             text_fg=_RS_WHITE, text_scale=0.040,
             frameColor=_RS_ORANGE,
             frameSize=(-TH_W/2, TH_W/2, -0.054, 0.054),
@@ -1200,28 +1971,19 @@ class LoginScreenMixin:
             command=self._popup_play,
             extraArgs=[build["id"]],
         )
-        DirectButton(
-            text="Play Solo",
-            text_fg=_RS_GRAY, text_scale=0.028,
-            frameColor=_RS_BORDER,
-            frameSize=(-TH_W/4, TH_W/4, -0.030, 0.030),
-            parent=card, pos=(TH_CX, 0, PLAY_Y - 0.100),
-            relief=1,
-            command=self._popup_play_solo,
-            extraArgs=[build["id"]],
-        )
 
         # Right column — info
         RX = 0.16
         title = build["name"]
-        if len(title) > 24:
-            title = title[:22] + "…"
+        if len(title) > 48:
+            title = title[:46] + "…"
         DirectLabel(
             text=title,
-            text_fg=_RS_WHITE, text_scale=0.044,
+            text_fg=_RS_WHITE, text_scale=0.036,
             text_align=TextNode.ALeft,
+            text_wordwrap=25,
             frameColor=(0, 0, 0, 0),
-            parent=card, pos=(RX, 0, HH - 0.14),
+            parent=card, pos=(RX, 0, HH - 0.12),
         )
         import datetime
         updated_str = datetime.datetime.fromtimestamp(
@@ -1252,35 +2014,41 @@ class LoginScreenMixin:
                 parent=card, pos=(RX + 0.22, 0, y),
             )
         if desc:
-            desc_short = (desc[:80] + "…") if len(desc) > 80 else desc
+            desc_short = (desc[:250] + "…") if len(desc) > 250 else desc
             DirectLabel(
                 text=desc_short,
                 text_fg=_RS_GRAY, text_scale=0.024,
                 text_align=TextNode.ALeft,
+                text_wordwrap=38,
                 frameColor=(0, 0, 0, 0),
                 parent=card, pos=(RX, 0, HH - 0.32 - len(info_rows) * 0.12 - 0.06),
             )
 
     def _apply_thumbnail_texture(self, frame_np, b64_data):
-        """Decode a base64 image and apply it as a texture to a DirectFrame NodePath."""
         try:
-            import base64, tempfile, os
-            from panda3d.core import Filename
+            import base64
+            from panda3d.core import PNMImage, StringStream, Texture
             raw = base64.b64decode(b64_data)
-            suffix = ".jpg" if raw[:3] == b'\xff\xd8\xff' else ".png"
-            tmp = tempfile.mktemp(suffix=suffix)
-            with open(tmp, "wb") as f:
-                f.write(raw)
-            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-            if tex:
-                frame_np.setTexture(tex, 1)
-                frame_np["frameColor"] = (1, 1, 1, 1)
+            # Load image entirely from RAM — no temp files, no disk races
+            ss  = StringStream(raw)
+            pnm = PNMImage()
+            if not pnm.read(ss):
+                print("[THUMB] PNMImage.read from StringStream failed", flush=True)
+                return
+            tex = Texture()
+            tex.load(pnm)
+            tex.setMinfilter(Texture.FTLinear)
+            tex.setMagfilter(Texture.FTLinear)
+            # Use DirectGUI's own image system — raw setTexture() is overridden
+            # by the widget's internal render state and never shows through
+            fs = frame_np["frameSize"]   # (l, r, b, t)
+            hw = abs(fs[1])              # half-width
+            hh = abs(fs[3])             # half-height
+            frame_np["frameColor"]  = (1, 1, 1, 1)
+            frame_np["image"]       = tex
+            frame_np["image_scale"] = (hw, 1, hh)
         except Exception as e:
-            print(f"[THUMB] load error: {e}")
+            print(f"[THUMB] load error: {e}", flush=True)
 
     def _close_game_info_popup(self):
         popup = getattr(self, "_game_popup", None)
@@ -1406,6 +2174,8 @@ class LoginScreenMixin:
                 pass
             self._disconnect_popup = None
         self._entering_play_mode = False
+        if getattr(self, 'is_first_person', False):
+            self._exit_first_person()
         self.stop_multiplayer()
         for pid in list(getattr(self, "_remote_players", {}).keys()):
             self._remove_remote_player(pid)

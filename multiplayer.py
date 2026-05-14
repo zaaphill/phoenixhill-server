@@ -5,28 +5,22 @@ import threading
 import time
 from math import sin, pi
 
-from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectLabel, DirectButton
+from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectLabel, DirectButton, DGG
 from direct.task import Task
-from panda3d.core import TextNode
+from panda3d.core import TextNode, CardMaker, TransparencyAttrib, MouseButton
 
 import config as _cfg_mod
-
-_COLORS = [
-    (0.85, 0.25, 0.25, 1),
-    (0.25, 0.55, 0.90, 1),
-    (0.90, 0.75, 0.15, 1),
-    (0.30, 0.80, 0.35, 1),
-    (0.85, 0.50, 0.15, 1),
-    (0.65, 0.25, 0.90, 1),
-]
 
 _MAX_SWING  = 30.0
 _WALK_SPEED = 10.0
 _LERP       = 18.0   # interpolation factor — higher = snappier catch-up
-_MAX_CHAT   = 8      # chat lines shown
+_CHAT_LINES = 10     # visible line slots in the panel
+_CHAT_WRAP  = 42     # chars per visual line (pre-wrap before display)
+_LINE_SPACE = 0.040  # vertical gap between chat lines
 _CHAT_PNL_W = 0.88   # chat panel width (units in aspect2d)
-_CHAT_PNL_H = 0.30   # message area height
-_INPUT_H    = 0.058  # chat input bar height
+_CHAT_PNL_H = 0.44   # message area height
+_INPUT_H    = 0.052  # chat input bar height (1 line)
+_INPUT_LINE = 0.040  # extra height added per wrapped line
 _LB_W       = 0.32   # leaderboard panel width
 _CHAT_TOP   = -0.10  # z from a2dTopLeft — sits just below the toolbar (TH=0.09)
 # Toolbar-button style constants (must match ui.py BTN / TEXT / TH)
@@ -200,6 +194,21 @@ class MultiplayerMixin:
                     })
 
     async def _mp_send(self, ws):
+        # Announce avatar colors immediately so other players see them right away.
+        try:
+            colors = self.load_avatar_colors()
+            payload = {"type": "avatar_colors", "colors": {k: list(v) for k, v in colors.items()}}
+            print(f"[AVATAR_MSG_SEND] payload={payload}", flush=True)
+            await ws.send(json.dumps(payload))
+        except Exception as e:
+            print(f"[MP] failed to send avatar colors: {e}")
+        equipped = getattr(self, '_equipped_tshirt_id', None)
+        if equipped:
+            try:
+                await ws.send(json.dumps({"type": "equip_tshirt", "item_id": equipped}))
+            except Exception as e:
+                print(f"[MP] failed to send equip_tshirt: {e}")
+
         last_pos = None
         last_sent = time.monotonic()
         last_idle_log = 0
@@ -311,6 +320,18 @@ class MultiplayerMixin:
                 except Exception:
                     pass
 
+            face_np = d.get("face_np")
+            face_textures = getattr(self, '_face_textures', [])
+            if face_np and len(face_textures) >= 2:
+                d["face_anim_t"] += dt
+                if d["face_anim_t"] >= 0.25:
+                    d["face_anim_t"] -= 0.25
+                    d["face_frame"] = (d["face_frame"] + 1) % len(face_textures)
+                    try:
+                        face_np.setTexture(face_textures[d["face_frame"]], 2)
+                    except Exception:
+                        pass
+
         return Task.cont
 
     def _handle_mp_msg(self, msg):
@@ -343,15 +364,18 @@ class MultiplayerMixin:
             self.taskMgr.doMethodLater(0, _do_kick, "_kickedCleanup", appendTask=True)
             return
         if t == "state":
-            print(f"[MP] state: {len(msg.get('players', {}))} other players")
-            for pid, d in msg.get("players", {}).items():
-                self._add_remote_player(pid, d.get("username", pid))
+            players = msg.get("players", {})
+            colors_in_state = {pid: bool(d.get("colors")) for pid, d in players.items()}
+            print(f"[WS_RECV] type=state player_count={len(players)} colors_present={colors_in_state}", flush=True)
+            for pid, d in players.items():
+                self._add_remote_player(pid, d.get("username", pid), d.get("colors"), tshirt_id=d.get("tshirt_id"))
                 self._update_remote_player(pid, d)
             self._update_leaderboard()
         elif t == "joined":
-            print(f"[MP] joined: {msg['player_id']} ({msg.get('username')})")
-            self._add_remote_player(msg["player_id"], msg.get("username", ""))
+            print(f"[WS_RECV] type=joined pid={msg.get('player_id')} username={msg.get('username')!r} colors={msg.get('colors')}", flush=True)
+            self._add_remote_player(msg["player_id"], msg.get("username", ""), msg.get("colors"), tshirt_id=msg.get("tshirt_id"))
             self._update_leaderboard()
+            self._broadcast_my_colors()
         elif t == "left":
             print(f"[MP] left: {msg['player_id']}")
             self._remove_remote_player(msg["player_id"])
@@ -360,8 +384,24 @@ class MultiplayerMixin:
             pid = msg.get("player_id")
             if pid and pid in self._remote_players:
                 self._update_remote_player(pid, msg)
+        elif t == "avatar_colors":
+            pid = msg.get("player_id")
+            print(f"[WS_RECV] type=avatar_colors pid={pid} pid_known={pid in self._remote_players} colors={msg.get('colors')}", flush=True)
+            if pid and pid in self._remote_players:
+                self._apply_colors_to_remote_player(pid, msg.get("colors", {}))
         elif t == "chat":
             self._add_chat_message(msg.get("username", "?"), msg.get("text", ""))
+        elif t == "equip_tshirt":
+            pid = msg.get("player_id")
+            item_id = msg.get("item_id")
+            if pid and pid in self._remote_players:
+                if item_id:
+                    threading.Thread(
+                        target=self._fetch_and_apply_remote_tshirt,
+                        args=(pid, item_id), daemon=True,
+                    ).start()
+                else:
+                    self._apply_tshirt_to_remote(pid, None)
 
     # ── Disconnect popup ─────────────────────────────────────────────────
 
@@ -419,45 +459,77 @@ class MultiplayerMixin:
         box.setTextureOff(1)
         return box
 
-    def _add_remote_player(self, pid, username):
+    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None):
         if pid in self._remote_players:
             return
         # Ignore ghost entries for our own account (zombie from a previous session
         # that hasn't been evicted by the server's ping timeout yet).
         if username and username == getattr(self, "_session_username", None):
             return
-        r, g, b, a = _COLORS[len(self._remote_players) % len(_COLORS)]
-        skin  = (r * 0.95, g * 0.85, b * 0.55, a)
-        leg_c = (r * 0.60, g * 0.75, b * 0.35, a)
-        print(f"[MP] adding remote player pid={pid} username={username!r}")
+        print(f"[REMOTE_BUILD] pid={pid} username={username!r} colors_arg={colors}", flush=True)
+
+        _D_HEAD  = (244/255, 204/255,  67/255, 1)
+        _D_TORSO = ( 23/255, 107/255, 170/255, 1)
+        _D_LEG   = (165/255, 188/255,  80/255, 1)
+
+        def _col(key, fallback):
+            if colors and isinstance(colors, dict):
+                v = colors.get(key)
+                if v and len(v) == 4:
+                    return tuple(float(x) for x in v)
+            return fallback
+
+        torso_c = _col("torso",     _D_TORSO)
+        la_c    = _col("left_arm",  _D_HEAD)
+        ra_c    = _col("right_arm", _D_HEAD)
+        head_c  = _col("head",      _D_HEAD)
+        ll_c    = _col("left_leg",  _D_LEG)
+        rl_c    = _col("right_leg", _D_LEG)
 
         root = self.render.attachNewNode(f"remote_{pid}")
         root.setPos(0, 0, -9999)
 
-        self._make_box(root, (2, 1, 2), (-1, -0.5, 2), (r, g, b, a))  # torso
+        torso_node = self._make_box(root, (2, 1, 2), (-1, -0.5, 2), torso_c)
 
         la_piv = root.attachNewNode("la_piv")
         la_piv.setPos(-1.5, 0, 4)
-        self._make_box(la_piv, (1, 1, 2), (-0.5, -0.5, -2), skin)
+        la_node = self._make_box(la_piv, (1, 1, 2), (-0.5, -0.5, -2), la_c)
 
         ra_piv = root.attachNewNode("ra_piv")
         ra_piv.setPos(1.5, 0, 4)
-        self._make_box(ra_piv, (1, 1, 2), (-0.5, -0.5, -2), skin)
+        ra_node = self._make_box(ra_piv, (1, 1, 2), (-0.5, -0.5, -2), ra_c)
 
         ll_piv = root.attachNewNode("ll_piv")
         ll_piv.setPos(-0.5, 0, 2)
-        self._make_box(ll_piv, (1, 1, 2), (-0.5, -0.5, -2), leg_c)
+        ll_node = self._make_box(ll_piv, (1, 1, 2), (-0.5, -0.5, -2), ll_c)
 
         rl_piv = root.attachNewNode("rl_piv")
         rl_piv.setPos(0.5, 0, 2)
-        self._make_box(rl_piv, (1, 1, 2), (-0.5, -0.5, -2), leg_c)
+        rl_node = self._make_box(rl_piv, (1, 1, 2), (-0.5, -0.5, -2), rl_c)
 
-        head = self.create_cylinder(radius=0.7, height=1.1, segments=16)
-        head.reparentTo(root)
-        head.setColor(*skin)
-        head.setTwoSided(True)
-        head.setTextureOff(1)
-        head.setPos(0, 0, 4.55)
+        head_node = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+        head_node.reparentTo(root)
+        head_node.setColor(*head_c)
+        head_node.setTwoSided(True)
+        head_node.setTextureOff(1)
+        head_node.setPos(0, 0, 4.55)
+
+        face_np = None
+        face_textures = getattr(self, '_face_textures', [])
+        if face_textures:
+            _cm = CardMaker('face')
+            _cm.setFrame(-0.70, 0.70, -0.55, 0.55)
+            _face_anchor = root.attachNewNode("face_anchor")
+            _face_anchor.setPos(0, 0.72, 4.55)
+            face_np = _face_anchor.attachNewNode(_cm.generate())
+            face_np.setTransparency(TransparencyAttrib.MAlpha)
+            face_np.setTwoSided(False)
+            face_np.setColor(1, 1, 1, 1)
+            face_np.setLightOff()
+            face_np.setShaderOff()
+            face_np.setDepthWrite(False)
+            face_np.setH(180)
+            face_np.setTexture(face_textures[0])
 
         tn = TextNode("mpname")
         tn.setText(username or pid)
@@ -474,12 +546,29 @@ class MultiplayerMixin:
             "root": root, "label": label,
             "la_piv": la_piv, "ra_piv": ra_piv,
             "ll_piv": ll_piv, "rl_piv": rl_piv,
+            "torso_node": torso_node, "la_node": la_node, "ra_node": ra_node,
+            "ll_node": ll_node, "rl_node": rl_node, "head_node": head_node,
             "username": username,
             "walk_angle": 0.0, "is_moving": False,
             "last_pos": None, "last_move_time": 0.0,
             "target_pos": None, "target_h": 0.0,
             "interp_pos": None, "interp_h": 0.0,
+            "face_np": face_np, "face_frame": 0, "face_anim_t": 0.0,
+            "tshirt_anchor": None, "tshirt_np": None,
         }
+        if tshirt_id:
+            threading.Thread(
+                target=self._fetch_and_apply_remote_tshirt,
+                args=(pid, tshirt_id), daemon=True,
+            ).start()
+        for _nk, _ck in [("torso_node","torso"),("la_node","left_arm"),("ra_node","right_arm"),
+                          ("ll_node","left_leg"),("rl_node","right_leg"),("head_node","head")]:
+            _n = self._remote_players[pid].get(_nk)
+            try:
+                _actual = tuple(round(float(x), 3) for x in _n.getColor()) if _n else None
+            except Exception:
+                _actual = "ERROR"
+            print(f"[REMOTE_BUILD_PART] pid={pid} part={_ck} actual_color={_actual}", flush=True)
 
     def _remove_remote_player(self, pid):
         d = self._remote_players.pop(pid, None)
@@ -489,6 +578,95 @@ class MultiplayerMixin:
                 d["label"].removeNode()
             except Exception:
                 pass
+            d["tshirt_anchor"] = None
+            d["tshirt_np"] = None
+
+    def _fetch_and_apply_remote_tshirt(self, pid, item_id):
+        if not hasattr(self, '_tshirt_cache'):
+            self._tshirt_cache = {}
+        image_b64 = self._tshirt_cache.get(item_id)
+        if not image_b64:
+            import auth_client
+            result, _ = auth_client.get_shop_item(item_id)
+            if result and result.get("image_data"):
+                image_b64 = result["image_data"]
+                self._tshirt_cache[item_id] = image_b64
+        if image_b64:
+            self.taskMgr.doMethodLater(
+                0, self._apply_remote_tshirt_task, f"_applyTshirt_{pid}",
+                extraArgs=[pid, image_b64], appendTask=True,
+            )
+
+    def _apply_remote_tshirt_task(self, pid, image_b64, task):
+        self._apply_tshirt_to_remote(pid, image_b64)
+        return task.done
+
+    def _apply_tshirt_to_remote(self, pid, image_b64):
+        d = self._remote_players.get(pid)
+        if not d:
+            return
+        # Remove old
+        for attr in ('tshirt_np', 'tshirt_anchor'):
+            n = d.get(attr)
+            if n and not n.isEmpty():
+                n.removeNode()
+            d[attr] = None
+        if not image_b64:
+            return
+        try:
+            import base64 as _b64, tempfile, os as _os
+            from panda3d.core import CardMaker, TransparencyAttrib, Filename
+            raw = _b64.b64decode(image_b64)
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                tf.write(raw)
+                tmp = tf.name
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
+            _os.unlink(tmp)
+            if not tex:
+                return
+            root = d["root"]
+            cm = CardMaker('rtshirt')
+            cm.setFrame(-1, 1, 0, 2)
+            anchor = root.attachNewNode("tshirt_anchor")
+            anchor.setPos(0, -(0.5 + 0.01), 2)
+            np = anchor.attachNewNode(cm.generate())
+            np.setH(180)
+            np.setTexture(tex)
+            np.setTransparency(TransparencyAttrib.MAlpha)
+            np.setLightOff()
+            np.setShaderOff()
+            np.setDepthWrite(False)
+            d["tshirt_anchor"] = anchor
+            d["tshirt_np"] = np
+        except Exception as e:
+            print(f"[TSHIRT_REMOTE] apply failed for {pid}: {e}", flush=True)
+
+    def _apply_colors_to_remote_player(self, pid, colors):
+        d = self._remote_players.get(pid)
+        print(f"[REMOTE_APPLY] pid={pid} d_exists={d is not None} colors={colors}", flush=True)
+        if not d or not colors:
+            return
+        mapping = [
+            ("torso_node", "torso"),
+            ("la_node",    "left_arm"),
+            ("ra_node",    "right_arm"),
+            ("ll_node",    "left_leg"),
+            ("rl_node",    "right_leg"),
+            ("head_node",  "head"),
+        ]
+        for node_key, color_key in mapping:
+            node = d.get(node_key)
+            v = colors.get(color_key)
+            if node and v and len(v) == 4:
+                try:
+                    before = node.getColor()
+                    node.setColor(float(v[0]), float(v[1]), float(v[2]), float(v[3]))
+                    after = node.getColor()
+                    print(f"[REMOTE_APPLY] part={color_key} before={tuple(round(x,3) for x in before)} after={tuple(round(x,3) for x in after)}", flush=True)
+                except Exception as e:
+                    print(f"[REMOTE_APPLY] part={color_key} FAILED: {e}", flush=True)
+            else:
+                print(f"[REMOTE_APPLY] part={color_key} SKIP node_exists={node is not None} v={v}", flush=True)
 
     def _update_remote_player(self, pid, data):
         d = self._remote_players.get(pid)
@@ -575,6 +753,35 @@ class MultiplayerMixin:
                 pass
         self._lb_panel = None
 
+    def _broadcast_my_colors(self):
+        """Send our avatar colors over the websocket so other players can update us."""
+        ws   = getattr(self, "_ws", None)
+        loop = getattr(self, "_mp_loop", None)
+        if not ws or not loop or loop.is_closed():
+            print(f"[BROADCAST_COLORS] SKIP ws={ws is not None} loop_ok={loop is not None and not loop.is_closed()}", flush=True)
+            return
+        try:
+            colors = self.load_avatar_colors()
+            print(f"[BROADCAST_COLORS] sending colors={colors}", flush=True)
+            asyncio.run_coroutine_threadsafe(
+                ws.send(json.dumps({
+                    "type": "avatar_colors",
+                    "colors": {k: list(v) for k, v in colors.items()},
+                })),
+                loop,
+            )
+        except Exception as e:
+            print(f"[MP] broadcast colors error: {e}")
+        equipped = getattr(self, '_equipped_tshirt_id', None)
+        if equipped:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ws.send(json.dumps({"type": "equip_tshirt", "item_id": equipped})),
+                    loop,
+                )
+            except Exception as e:
+                print(f"[MP] broadcast equip_tshirt error: {e}")
+
     # ── Chat ──────────────────────────────────────────────────────────────
 
     def _setup_chat_ui(self):
@@ -604,8 +811,11 @@ class MultiplayerMixin:
             pos=(0.04, 0, _CHAT_TOP),
             sortOrder=50,
         )
+        self._chat_lines  = []   # flat list of pre-wrapped display lines
         self._chat_labels = []
-        for i in range(_MAX_CHAT):
+        for i in range(_CHAT_LINES):
+            # i=0 → bottom (newest), i=_CHAT_LINES-1 → top (oldest)
+            z = -_CHAT_PNL_H + 0.030 + i * _LINE_SPACE
             lbl = DirectLabel(
                 text="",
                 text_fg=(1, 1, 1, 0.92),
@@ -613,7 +823,7 @@ class MultiplayerMixin:
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
                 parent=self._chat_panel,
-                pos=(0.014, 0, -0.025 - i * 0.036),
+                pos=(0.014, 0, z),
             )
             self._chat_labels.append(lbl)
 
@@ -624,6 +834,7 @@ class MultiplayerMixin:
             parent=base.a2dTopLeft,
             pos=(0.04, 0, _CHAT_TOP - _CHAT_PNL_H),
             sortOrder=51,
+            state=DGG.NORMAL,
         )
         self._chat_placeholder = DirectLabel(
             text='To chat click here or press "/" key',
@@ -632,20 +843,20 @@ class MultiplayerMixin:
             text_align=TextNode.ALeft,
             frameColor=(0, 0, 0, 0),
             parent=self._chat_input_frame,
-            pos=(0.015, 0, -0.032),
+            pos=(0.015, 0, -0.033),
         )
         self._chat_entry = DirectEntry(
             text_fg=(1, 1, 1, 1),
             text_scale=0.033,
             frameColor=(0, 0, 0, 0),
-            width=24,
-            numLines=1,
+            width=26,
+            numLines=3,
             parent=self._chat_input_frame,
-            pos=(0.012, 0, -0.036),
+            pos=(0.012, 0, -0.033),
             command=self._on_chat_submit,
         )
         self._chat_entry.hide()
-        self._chat_input_frame.bind("mouse1", lambda e: self._open_chat_input())
+        self._chat_input_frame.bind(DGG.B1PRESS, lambda e: self._open_chat_input())
 
     def _teardown_chat_ui(self):
         for attr in ("_chat_toggle_btn", "_chat_panel", "_chat_input_frame"):
@@ -656,8 +867,8 @@ class MultiplayerMixin:
                 except Exception:
                     pass
             setattr(self, attr, None)
+        self._chat_lines        = []
         self._chat_labels       = []
-        self._chat_messages     = []
         self._chat_input_active = False
         self._chat_placeholder  = None
 
@@ -673,6 +884,45 @@ class MultiplayerMixin:
             if inp:   inp.hide()
             self._close_chat_input()
 
+    def _chat_resize_task(self, task):
+        import textwrap
+        entry = getattr(self, "_chat_entry", None)
+        frame = getattr(self, "_chat_input_frame", None)
+        if entry is None or frame is None:
+            return Task.done
+
+        # Auto-resize height based on wrapped line count
+        raw = entry.get()
+        lines = textwrap.wrap(raw, _CHAT_WRAP) if raw else []
+        n = max(1, len(lines))
+        new_h = _INPUT_H + (n - 1) * _INPUT_LINE
+        frame["frameSize"] = (0, _CHAT_PNL_W, -new_h, 0)
+
+        # Click-outside detection (avoids touching accept("mouse1") which would
+        # overwrite the editor's picker handler registered in game.py)
+        mwn = base.mouseWatcherNode
+        pressed = mwn.isButtonDown(MouseButton.one())
+        if pressed and not getattr(self, "_chat_m1_was_down", True):
+            if not self._is_mouse_over_chat_input():
+                self._close_chat_input()
+                return Task.done
+        self._chat_m1_was_down = pressed
+
+        return Task.cont
+
+    def _is_mouse_over_chat_input(self):
+        if not base.mouseWatcherNode.hasMouse():
+            return True
+        m  = base.mouseWatcherNode.getMouse()
+        ar = base.getAspectRatio()
+        x0 = (-ar + 0.04) / ar
+        x1 = x0 + _CHAT_PNL_W / ar
+        z1 = 1.0 + _CHAT_TOP - _CHAT_PNL_H
+        frame = getattr(self, "_chat_input_frame", None)
+        h  = (-frame["frameSize"][2]) if frame else _INPUT_H
+        z0 = z1 - h
+        return x0 <= m.x <= x1 and z0 <= m.y <= z1
+
     def _open_chat_input(self):
         if not getattr(self, "_chat_visible", True):
             self._chat_visible = True
@@ -683,14 +933,20 @@ class MultiplayerMixin:
         if getattr(self, "_chat_input_active", False):
             return
         self._chat_input_active = True
+        self._chat_m1_was_down  = True  # ignore the click that opened the input
         ph = getattr(self, "_chat_placeholder", None)
         if ph: ph.hide()
         self._chat_entry.show()
         self._chat_entry.set("")
         self._chat_entry["focus"] = 1
+        self.taskMgr.add(self._chat_resize_task, "_chatResize")
 
     def _close_chat_input(self):
         self._chat_input_active = False
+        self.taskMgr.remove("_chatResize")
+        frame = getattr(self, "_chat_input_frame", None)
+        if frame:
+            frame["frameSize"] = (0, _CHAT_PNL_W, -_INPUT_H, 0)
         self._chat_entry.hide()
         self._chat_entry["focus"] = 0
         ph = getattr(self, "_chat_placeholder", None)
@@ -706,22 +962,22 @@ class MultiplayerMixin:
         loop = getattr(self, "_mp_loop", None)
         if ws and loop and not loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "chat", "text": text[:200]})),
+                ws.send(json.dumps({"type": "chat", "text": text[:400]})),
                 loop,
             )
         username = getattr(self, "_session_username", "You")
         self._add_chat_message(username, text)
 
     def _add_chat_message(self, username, text):
-        if not hasattr(self, "_chat_messages"):
+        if not hasattr(self, "_chat_lines"):
             return
+        import textwrap
         line = f"{username}: {text}"
-        self._chat_messages.append(line)
-        if len(self._chat_messages) > _MAX_CHAT:
-            self._chat_messages = self._chat_messages[-_MAX_CHAT:]
+        self._chat_lines.extend(textwrap.wrap(line, _CHAT_WRAP) or [line])
+        if len(self._chat_lines) > _CHAT_LINES * 6:
+            self._chat_lines = self._chat_lines[-(_CHAT_LINES * 4):]
+        visible = self._chat_lines[-_CHAT_LINES:]
         for i, lbl in enumerate(self._chat_labels):
-            if i < len(self._chat_messages):
-                raw = self._chat_messages[i]
-                lbl["text"] = (raw[:44] + "…") if len(raw) > 44 else raw
-            else:
-                lbl["text"] = ""
+            # label[0] = bottom = newest; label[-1] = top = oldest
+            rev = len(visible) - 1 - i
+            lbl["text"] = visible[rev] if rev >= 0 else ""

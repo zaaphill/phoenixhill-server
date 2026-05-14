@@ -3,7 +3,10 @@ PhoenixHill auth server
 Run with:  python server.py
 Requires:  pip install fastapi uvicorn
 """
-import asyncio, hashlib, json, os, secrets, sqlite3, time, traceback, uuid
+import asyncio, hashlib, json, os, secrets, sqlite3, sys, time, traceback, uuid
+
+_SERVER_INSTANCE_ID = f"{os.getpid()}-{time.time()}"
+from typing import Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -18,7 +21,7 @@ GAME_DOWNLOAD_URL = ""   # paste direct .exe download link here after uploading
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
-_SERVER_API_VERSION = 4
+_SERVER_API_VERSION = 8
 
 # build_id -> {player_id -> {ws, username, x, y, z, h}}
 _rooms: dict = {}
@@ -89,6 +92,34 @@ def _init_db():
         c.execute("ALTER TABLE builds ADD COLUMN visits INTEGER DEFAULT 0")
     except Exception:
         pass
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS build_visits (
+            user_id    INTEGER NOT NULL,
+            build_id   INTEGER NOT NULL,
+            visited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, build_id)
+        )""")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS shop_items (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            name        TEXT    NOT NULL,
+            description TEXT    DEFAULT '',
+            price       INTEGER DEFAULT 0,
+            image_data  TEXT    NOT NULL,
+            created_at  REAL    NOT NULL
+        )""")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS shop_purchases (
+            user_id      INTEGER NOT NULL,
+            item_id      INTEGER NOT NULL,
+            purchased_at REAL    NOT NULL,
+            PRIMARY KEY (user_id, item_id)
+        )""")
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN equipped_tshirt INTEGER DEFAULT NULL")
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -113,6 +144,15 @@ class PublishBody(BaseModel):
 
 class AvatarBody(BaseModel):
     colors: dict
+
+class ShopItemBody(BaseModel):
+    name:        str
+    description: str = ""
+    price:       int = 0
+    image_data:  str  # base64 PNG/JPG
+
+class EquipTshirtBody(BaseModel):
+    item_id: Optional[int] = None
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -195,7 +235,13 @@ def get_version():
 
 @app.get("/api/server_version")
 def get_server_version():
-    return {"api_version": _SERVER_API_VERSION}
+    return {
+        "api_version": _SERVER_API_VERSION,
+        "instance":    _SERVER_INSTANCE_ID,
+        "pid":         os.getpid(),
+        "file":        os.path.abspath(__file__),
+        "cwd":         os.getcwd(),
+    }
 
 
 @app.delete("/api/logout")
@@ -328,35 +374,70 @@ def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
 
 
+@app.get("/api/version")
+def api_version():
+    return {"version": _SERVER_API_VERSION, "build_visits_exists": True}
+
+
 @app.get("/api/published/{build_id}")
 def get_published_build(build_id: int):
+    # Pure data retrieval — no side effects
     c = _db()
     row = c.execute(
         "SELECT id, name, data FROM builds WHERE id=? AND published=1",
         (build_id,),
     ).fetchone()
-    if row:
-        c.execute("UPDATE builds SET visits = COALESCE(visits,0)+1 WHERE id=?", (build_id,))
-        c.commit()
     c.close()
     if not row:
         raise HTTPException(404, "Build not found or not published")
     return {"ok": True, "id": row["id"], "name": row["name"], "data": row["data"]}
 
 
+@app.post("/api/published/{build_id}/visit")
+def record_visit(build_id: int, token: str = ""):
+    if not token:
+        return {"ok": False, "reason": "no_token"}
+    try:
+        user_id = _get_session(token)["user_id"]
+    except Exception:
+        return {"ok": False, "reason": "invalid_token"}
+    c = _db()
+    with c:
+        c.execute(
+            "INSERT OR IGNORE INTO build_visits (user_id, build_id) VALUES (?,?)",
+            (user_id, build_id),
+        )
+        inserted = c.execute("SELECT changes()").fetchone()[0]
+        if inserted:
+            c.execute(
+                "UPDATE builds SET visits = COALESCE(visits,0)+1 WHERE id=?",
+                (build_id,),
+            )
+    print(f"[VISIT] user={user_id} build={build_id} counted={bool(inserted)}", flush=True)
+    c.close()
+    return {"ok": True, "counted": bool(inserted)}
+
+
 class GameSettingsBody(BaseModel):
     thumbnail:   str = ""    # base64-encoded PNG/JPG, or empty to clear
     description: str = ""
+    name:        str = ""    # if non-empty, rename the build
 
 
 @app.put("/api/builds/{build_id}/settings")
 def update_game_settings(build_id: int, token: str, b: GameSettingsBody):
     sess = _get_session(token)
     c = _db()
-    c.execute(
-        "UPDATE builds SET thumbnail=?, description=? WHERE id=? AND user_id=?",
-        (b.thumbnail or None, b.description, build_id, sess["user_id"]),
-    )
+    if b.name.strip():
+        c.execute(
+            "UPDATE builds SET thumbnail=?, description=?, name=? WHERE id=? AND user_id=?",
+            (b.thumbnail or None, b.description, b.name.strip(), build_id, sess["user_id"]),
+        )
+    else:
+        c.execute(
+            "UPDATE builds SET thumbnail=?, description=? WHERE id=? AND user_id=?",
+            (b.thumbnail or None, b.description, build_id, sess["user_id"]),
+        )
     c.commit()
     c.close()
     return {"ok": True}
@@ -367,13 +448,97 @@ def get_game_settings(build_id: int, token: str):
     sess = _get_session(token)
     c = _db()
     row = c.execute(
-        "SELECT thumbnail, description FROM builds WHERE id=? AND user_id=?",
+        "SELECT name, thumbnail, description FROM builds WHERE id=? AND user_id=?",
         (build_id, sess["user_id"]),
     ).fetchone()
     c.close()
     if not row:
         raise HTTPException(404, "Build not found")
-    return {"thumbnail": row["thumbnail"] or "", "description": row["description"] or ""}
+    return {"name": row["name"] or "", "thumbnail": row["thumbnail"] or "", "description": row["description"] or ""}
+
+
+@app.post("/api/shop/items")
+def create_shop_item(token: str, b: ShopItemBody):
+    sess = _get_session(token)
+    name = b.name.strip()
+    if not name:
+        raise HTTPException(400, "Name required")
+    if not b.image_data:
+        raise HTTPException(400, "Image required")
+    c = _db()
+    cur = c.execute(
+        "INSERT INTO shop_items (user_id, name, description, price, image_data, created_at) VALUES (?,?,?,?,?,?)",
+        (sess["user_id"], name, b.description.strip(), max(0, b.price), b.image_data, time.time()),
+    )
+    item_id = cur.lastrowid
+    c.commit()
+    c.close()
+    return {"ok": True, "id": item_id}
+
+@app.get("/api/shop/items")
+def list_shop_items():
+    c = _db()
+    rows = c.execute(
+        """SELECT s.id, s.name, s.description, s.price, s.created_at, u.username
+           FROM shop_items s JOIN users u ON s.user_id = u.id
+           ORDER BY s.created_at DESC""",
+    ).fetchall()
+    c.close()
+    return {"items": [dict(r) for r in rows]}
+
+@app.get("/api/shop/items/{item_id}")
+def get_shop_item(item_id: int):
+    c = _db()
+    row = c.execute(
+        """SELECT s.id, s.name, s.description, s.price, s.image_data, s.created_at, u.username
+           FROM shop_items s JOIN users u ON s.user_id = u.id
+           WHERE s.id=?""",
+        (item_id,),
+    ).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(404, "Item not found")
+    return dict(row)
+
+@app.post("/api/shop/items/{item_id}/buy")
+def buy_shop_item(item_id: int, token: str):
+    sess = _get_session(token)
+    c = _db()
+    if not c.execute("SELECT id FROM shop_items WHERE id=?", (item_id,)).fetchone():
+        c.close()
+        raise HTTPException(404, "Item not found")
+    c.execute(
+        "INSERT OR IGNORE INTO shop_purchases (user_id, item_id, purchased_at) VALUES (?,?,?)",
+        (sess["user_id"], item_id, time.time()),
+    )
+    c.commit()
+    c.close()
+    return {"ok": True}
+
+@app.get("/api/shop/owned")
+def get_owned_items(token: str):
+    sess = _get_session(token)
+    c = _db()
+    rows = c.execute(
+        """SELECT s.id, s.name, s.description, s.price, s.image_data, u.username
+           FROM shop_purchases p
+           JOIN shop_items s ON p.item_id = s.id
+           JOIN users u ON s.user_id = u.id
+           WHERE p.user_id=?
+           ORDER BY p.purchased_at DESC""",
+        (sess["user_id"],),
+    ).fetchall()
+    c.close()
+    return {"items": [dict(r) for r in rows]}
+
+@app.put("/api/avatar/equipped_tshirt")
+def equip_tshirt_endpoint(token: str, b: EquipTshirtBody):
+    sess = _get_session(token)
+    c = _db()
+    c.execute("UPDATE users SET equipped_tshirt=? WHERE id=?", (b.item_id, sess["user_id"]))
+    c.commit()
+    c.close()
+    return {"ok": True}
 
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────
@@ -416,11 +581,13 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # Load colors from DB — guaranteed up-to-date (pushed on every color pick + on login).
     try:
         uc = _db()
-        urow = uc.execute("SELECT avatar_colors FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+        urow = uc.execute("SELECT avatar_colors, equipped_tshirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
         uc.close()
         player_colors = json.loads(urow["avatar_colors"]) if urow and urow["avatar_colors"] else {}
+        equipped_tshirt = int(urow["equipped_tshirt"]) if urow and urow["equipped_tshirt"] else None
     except Exception:
         player_colors = {}
+        equipped_tshirt = None
     print(f"[WS_CONNECT_PARSED] username={username} colors={'yes' if player_colors else 'none'}", flush=True)
 
     # Evict stale same-username connections.
@@ -450,12 +617,13 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     try:
         others = {
             pid: {
-                "username": d.get("username", ""),
-                "x":        d.get("x", 0.0),
-                "y":        d.get("y", 0.0),
-                "z":        d.get("z", 0.0),
-                "h":        d.get("h", 0.0),
-                "colors":   d.get("colors") or {},
+                "username":  d.get("username", ""),
+                "x":         d.get("x", 0.0),
+                "y":         d.get("y", 0.0),
+                "z":         d.get("z", 0.0),
+                "h":         d.get("h", 0.0),
+                "colors":    d.get("colors") or {},
+                "tshirt_id": d.get("tshirt_id"),
             }
             for pid, d in _rooms.get(build_id, {}).items()
         }
@@ -477,6 +645,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         "websocket": websocket, "username": username,
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
         "colors": player_colors,
+        "tshirt_id": equipped_tshirt,
     }
     _entry_log = {k: v for k, v in _rooms[build_id][player_id].items() if k != "websocket"}
     print(f"[ROOM_STORE] {username}: {_entry_log}", flush=True)
@@ -484,6 +653,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         await _broadcast(build_id, {
             "type": "joined", "player_id": player_id, "username": username,
             "colors": player_colors,
+            "tshirt_id": equipped_tshirt,
         }, exclude=player_id)
         print(f"[WS] {username}: joined broadcast done", flush=True)
     except Exception as _e:
@@ -541,12 +711,22 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     print(f"[AVATAR_COLORS_CRASH] {username}: {repr(_ace)}", flush=True)
                     traceback.print_exc()
             elif msg.get("type") == "chat":
-                text = str(msg.get("text", ""))[:200]
+                text = str(msg.get("text", ""))[:400]
                 await _broadcast(build_id, {
                     "type": "chat",
                     "player_id": player_id,
                     "username": username,
                     "text": text,
+                }, exclude=player_id)
+            elif msg.get("type") == "equip_tshirt":
+                item_id = msg.get("item_id")
+                entry = _rooms.get(build_id, {}).get(player_id)
+                if entry:
+                    entry["tshirt_id"] = item_id
+                await _broadcast(build_id, {
+                    "type": "equip_tshirt",
+                    "player_id": player_id,
+                    "item_id": item_id,
                 }, exclude=player_id)
     except WebSocketDisconnect as _wd:
         code = getattr(_wd, "code", "?")

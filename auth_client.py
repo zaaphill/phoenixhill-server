@@ -7,7 +7,7 @@ import config as _config
 BASE = _config.get()["http"]
 
 
-def _request(method, path, body=None, params=None):
+def _request(method, path, body=None, params=None, timeout=5):
     url = BASE + path
     if params:
         url += "?" + urlencode(params)
@@ -15,7 +15,7 @@ def _request(method, path, body=None, params=None):
     headers = {"Content-Type": "application/json"} if data else {}
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read()), None
     except urllib.error.HTTPError as e:
         try:
@@ -69,6 +69,9 @@ def browse_published():
 def get_published_build(build_id):
     return _request("GET", f"/api/published/{build_id}")
 
+def post_visit(token, build_id):
+    return _request("POST", f"/api/published/{build_id}/visit", params={"token": token})
+
 def get_rooms():
     return _request("GET", "/api/rooms")
 
@@ -84,7 +87,32 @@ def get_server_version():
 def get_game_settings(token, build_id):
     return _request("GET", f"/api/builds/{build_id}/settings", params={"token": token})
 
-def put_game_settings(token, build_id, thumbnail, description):
+def put_game_settings(token, build_id, thumbnail, description, name=""):
     return _request("PUT", f"/api/builds/{build_id}/settings",
-                    {"thumbnail": thumbnail, "description": description},
+                    {"thumbnail": thumbnail, "description": description, "name": name},
                     params={"token": token})
+
+# ── Shop API ──────────────────────────────────────────────────────────────────
+
+def upload_shop_item(token, name, description, price, image_b64):
+    return _request("POST", "/api/shop/items",
+                    {"name": name, "description": description,
+                     "price": price, "image_data": image_b64},
+                    params={"token": token}, timeout=30)
+
+def list_shop_items():
+    return _request("GET", "/api/shop/items")
+
+def get_shop_item(item_id):
+    return _request("GET", f"/api/shop/items/{item_id}")
+
+def buy_shop_item(token, item_id):
+    return _request("POST", f"/api/shop/items/{item_id}/buy",
+                    params={"token": token})
+
+def get_owned_items(token):
+    return _request("GET", "/api/shop/owned", params={"token": token})
+
+def equip_tshirt(token, item_id_or_none):
+    return _request("PUT", "/api/avatar/equipped_tshirt",
+                    {"item_id": item_id_or_none}, params={"token": token})

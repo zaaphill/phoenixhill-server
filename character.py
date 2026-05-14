@@ -1,7 +1,9 @@
+import os as _os
 from panda3d.core import (
     NodePath, Vec3,
     GeomVertexFormat, GeomVertexData, Geom,
     GeomVertexWriter, GeomTriangles, GeomNode,
+    CardMaker, TransparencyAttrib, Filename,
 )
 from direct.task import Task
 from math import sin, cos, atan2, degrees, pi
@@ -75,6 +77,31 @@ class CharacterMixin:
         self.cam_target = self.head.attachNewNode("cam_target")
         self.cam_target.setPos(0, 0, 0.55)
 
+        _face_dir = _os.path.join(_os.getcwd(), 'textures', 'face sprites')
+        self._face_textures = []
+        for fname in ('facesprite1-removebg-preview.png', 'facesprite2-removebg-preview.png', 'facesprite3-removebg-preview.png'):
+            t = self.loader.loadTexture(Filename.fromOsSpecific(_os.path.join(_face_dir, fname)))
+            if t:
+                self._face_textures.append(t)
+        if self._face_textures:
+            _cm = CardMaker('face')
+            _cm.setFrame(-0.70, 0.70, -0.55, 0.55)
+            _face_anchor = self.character.attachNewNode("face_anchor")
+            _face_anchor.setPos(torso_center_x, torso_center_y + 0.72, head_center_z)
+            self._face_sprite = _face_anchor.attachNewNode(_cm.generate())
+            self._face_sprite.setTransparency(TransparencyAttrib.MAlpha)
+            self._face_sprite.setTwoSided(False)
+            self._face_sprite.setColor(1, 1, 1, 1)
+            self._face_sprite.setLightOff()
+            self._face_sprite.setShaderOff()
+            self._face_sprite.setDepthWrite(False)
+            self._face_sprite.setH(180)
+            self._face_sprite.setTexture(self._face_textures[0])
+            self._face_frame = 0
+            self._face_anim_t = 0.0
+
+        self.apply_avatar_colors()
+
     def create_cylinder(self, radius=0.7, height=1.1, segments=16):
         vformat = GeomVertexFormat.get_v3n3()
         vdata = GeomVertexData('cylinder', vformat, Geom.UH_static)
@@ -112,6 +139,8 @@ class CharacterMixin:
         return NodePath(node)
 
     def setKey(self, key, value):
+        if getattr(self, '_ui_modal_open', False):
+            return
         self.keys[key] = value
 
     def start_jump(self):
@@ -121,6 +150,15 @@ class CharacterMixin:
 
     def updateMovement(self, task):
         dt = globalClock.getDt()
+
+        face_spr = getattr(self, '_face_sprite', None)
+        if face_spr and getattr(self, '_face_textures', []):
+            self._face_anim_t += dt
+            if self._face_anim_t >= 0.25:  # 4 fps
+                self._face_anim_t -= 0.25
+                self._face_frame = (self._face_frame + 1) % len(self._face_textures)
+                face_spr.setTexture(self._face_textures[self._face_frame % len(self._face_textures)])
+
         if not self.is_playtest:
             return Task.cont
         if getattr(self, "_chat_input_active", False):
@@ -128,7 +166,7 @@ class CharacterMixin:
 
         current_pos = self.character.getPos()
 
-        if current_pos.z < -20:
+        if current_pos.z < -80:
             self.character.setPos(0, 0, self.floor_top)
             self.vertical_speed = 0
             self.is_jumping = False
@@ -176,7 +214,7 @@ class CharacterMixin:
             self.left_leg_pivot.setP(self.left_leg_pivot.getP()   * (1 - t))
             self.right_leg_pivot.setP(self.right_leg_pivot.getP() * (1 - t))
 
-        if getattr(self, 'shift_lock', False):
+        if getattr(self, 'shift_lock', False) or getattr(self, 'is_first_person', False):
             self.character.setH(self.cam_angle.x)
 
         current_pos = self.character.getPos()
@@ -285,3 +323,40 @@ class CharacterMixin:
                 self.is_jumping = False
             elif best_push.z < 0 and self.vertical_speed > 0:
                 self.vertical_speed = 0
+
+    def apply_tshirt(self, image_b64):
+        """Attach a T-shirt card to the front of the torso."""
+        self.remove_tshirt()
+        try:
+            import base64, tempfile, os as _os
+            from panda3d.core import CardMaker, TransparencyAttrib, Filename, PNMImage
+            raw = base64.b64decode(image_b64)
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                tf.write(raw)
+                tmp = tf.name
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
+            _os.unlink(tmp)
+            if not tex:
+                return
+            cm = CardMaker('tshirt')
+            cm.setFrame(-1, 1, 0, 2)
+            anchor = self.character.attachNewNode("tshirt_anchor")
+            anchor.setPos(0, -(0.5 + 0.01), 2)
+            np = anchor.attachNewNode(cm.generate())
+            np.setH(180)
+            np.setTexture(tex)
+            np.setTransparency(TransparencyAttrib.MAlpha)
+            np.setLightOff()
+            np.setShaderOff()
+            np.setDepthWrite(False)
+            self._tshirt_node = np
+            self._tshirt_anchor = anchor
+        except Exception as e:
+            print(f"[TSHIRT] apply failed: {e}", flush=True)
+
+    def remove_tshirt(self):
+        for attr in ('_tshirt_node', '_tshirt_anchor'):
+            n = getattr(self, attr, None)
+            if n and not n.isEmpty():
+                n.removeNode()
+            setattr(self, attr, None)
