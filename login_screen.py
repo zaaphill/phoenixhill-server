@@ -1216,7 +1216,9 @@ class LoginScreenMixin:
 
         result = {}
         PMASK  = BitMask32.bit(6)
-        BUF_W, BUF_H = 192, 256
+        # Buffer aspect must match the shop card display aspect:
+        # card is _SHOP_CW × _SHOP_CTH = 0.52 × 0.30 → aspect 0.52/0.30 ≈ 1.733 (landscape)
+        BUF_W, BUF_H = 300, 173
 
         _DEFAULTS = {
             "head":      (244/255, 204/255,  67/255, 1),
@@ -1226,6 +1228,8 @@ class LoginScreenMixin:
             "left_leg":  (165/255, 188/255,  80/255, 1),
             "right_leg": (165/255, 188/255,  80/255, 1),
         }
+        # Use the player's own avatar colors so the thumbnail reflects their look.
+        colors = getattr(self, "_avatar_colors", None) or self.load_avatar_colors()
 
         # ── Avatar rig parked far from the game world ──────────────────────────
         rig = self.render.attachNewNode("shop_thumb_root")
@@ -1236,7 +1240,7 @@ class LoginScreenMixin:
             m.reparentTo(parent)
             m.setScale(*scale)
             m.setPos(*pos)
-            m.setColor(*_DEFAULTS[key])
+            m.setColor(*colors.get(key, _DEFAULTS[key]))
             m.setTextureOff(1)
             m.show(PMASK)
             return m
@@ -1253,7 +1257,7 @@ class LoginScreenMixin:
 
         head = self.create_cylinder(radius=0.7, height=1.1, segments=16)
         head.reparentTo(rig)
-        head.setColor(*_DEFAULTS["head"])
+        head.setColor(*colors.get("head", _DEFAULTS["head"]))
         head.setTwoSided(True)
         head.setTextureOff(1)
         head.setPos(0, 0, 4.55)
@@ -1302,10 +1306,15 @@ class LoginScreenMixin:
 
         cam_np = self.makeCamera(buf)
         cam_np.reparentTo(self.render)
-        cam_np.setPos(0, 3000 - 8, 0)
-        cam_np.lookAt(rig, Point3(0, 0, 2.5))
+        # Camera at Y=-7 from rig, same height as look target (no tilt).
+        # makeCamera sets lens aspect from buffer (300/173 ≈ 1.733, landscape).
+        # hFOV 40° at distance 7 → 5.1 units wide (covers arms at ±2) and
+        # vFOV ≈ 24° → 2.9 units tall centred at Z=3.5 → shows Z 2.05–4.95
+        # (full torso Z=2–4 + most of head Z=4–5.1).
+        cam_np.setPos(0, 3000 - 7, 3.5)
+        cam_np.lookAt(rig, Point3(0, 0, 3.5))
         lens = cam_np.node().getLens()
-        lens.setFov(28, 40)
+        lens.setFov(40)
         lens.setNearFar(0.1, 10000)
         cam_np.node().setCameraMask(PMASK)
 

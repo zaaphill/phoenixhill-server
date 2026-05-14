@@ -305,7 +305,9 @@ class AvatarMixin:
         self._avatar_cam_pivot = pivot
 
         # ── Buffer ─────────────────────────────────────────────────────────
-        buf = self.win.makeTextureBuffer("avatar_preview", 320, 480)
+        # Buffer aspect must match card display aspect (CARD_W*2 / CARD_H*2 = 0.833)
+        # so no stretch occurs when frameTexture fills the card.
+        buf = self.win.makeTextureBuffer("avatar_preview", 400, 480)
         buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0))
         buf.setClearColorActive(True)
         self._avatar_buf = buf
@@ -314,10 +316,11 @@ class AvatarMixin:
         cam_np = self.makeCamera(buf)
         cam_np.reparentTo(pivot)
         cam_np.setPos(0, -8, 0)
-        cam_np.lookAt(preview_root, Point3(0, 0, 2.5))
+        cam_np.lookAt(preview_root, Point3(0, 0, 3))
         lens = cam_np.node().getLens()
-        lens.setAspectRatio(CARD_W / CARD_H)  # match card display shape
-        lens.setFov(28, 40)                  # explicit H/V so avatar fills frame naturally
+        # makeCamera already sets aspect from buffer (400/480 = 0.833 = CARD_W/CARD_H).
+        # setFov(h) alone lets Panda3D derive vFOV from that aspect.
+        lens.setFov(32)
         lens.setNearFar(0.1, 1000)
         cam_np.node().setCameraMask(PMASK)
         self._avatar_cam_np = cam_np
