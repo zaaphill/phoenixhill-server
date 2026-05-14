@@ -8,7 +8,11 @@ import threading
 import time
 
 from direct.gui.DirectGui import DirectFrame, DirectLabel, DirectEntry, DirectButton
-from panda3d.core import Point3, TextNode, TransparencyAttrib, Filename
+from panda3d.core import (
+    Point3, TextNode, TransparencyAttrib, Filename,
+    LColor, AmbientLight, DirectionalLight, CardMaker, BitMask32,
+    PNMImage, StringStream, Texture,
+)
 
 import auth_client
 
@@ -1200,6 +1204,130 @@ class LoginScreenMixin:
             extraArgs=[items, items_err, owned], appendTask=True,
         )
 
+    def _render_shop_thumbnails(self, items):
+        """RTT-render one avatar+tshirt frame per item; returns {item_id: Texture}."""
+        items_with_img = [(it["id"], it["image_data"]) for it in items if it.get("image_data")]
+        if not items_with_img:
+            return {}
+
+        result = {}
+        PMASK  = BitMask32.bit(6)
+        BUF_W, BUF_H = 192, 256
+
+        _DEFAULTS = {
+            "head":      (244/255, 204/255,  67/255, 1),
+            "torso":     ( 23/255, 107/255, 170/255, 1),
+            "left_arm":  (244/255, 204/255,  67/255, 1),
+            "right_arm": (244/255, 204/255,  67/255, 1),
+            "left_leg":  (165/255, 188/255,  80/255, 1),
+            "right_leg": (165/255, 188/255,  80/255, 1),
+        }
+
+        # ── Avatar rig parked far from the game world ──────────────────────────
+        rig = self.render.attachNewNode("shop_thumb_root")
+        rig.setPos(0, 3000, 0)
+
+        def box(parent, scale, pos, key):
+            m = self.loader.loadModel("models/box")
+            m.reparentTo(parent)
+            m.setScale(*scale)
+            m.setPos(*pos)
+            m.setColor(*_DEFAULTS[key])
+            m.setTextureOff(1)
+            m.show(PMASK)
+            return m
+
+        box(rig, (2, 1, 2), (-1, -0.5, 2), "torso")
+        la = rig.attachNewNode("la"); la.setPos(-1.5, 0, 4)
+        box(la, (1, 1, 2), (-0.5, -0.5, -2), "left_arm")
+        ra = rig.attachNewNode("ra"); ra.setPos(1.5, 0, 4)
+        box(ra, (1, 1, 2), (-0.5, -0.5, -2), "right_arm")
+        ll = rig.attachNewNode("ll"); ll.setPos(-0.5, 0, 2)
+        box(ll, (1, 1, 2), (-0.5, -0.5, -2), "left_leg")
+        rl = rig.attachNewNode("rl"); rl.setPos(0.5, 0, 2)
+        box(rl, (1, 1, 2), (-0.5, -0.5, -2), "right_leg")
+
+        head = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+        head.reparentTo(rig)
+        head.setColor(*_DEFAULTS["head"])
+        head.setTwoSided(True)
+        head.setTextureOff(1)
+        head.setPos(0, 0, 4.55)
+        head.show(PMASK)
+
+        al = AmbientLight("st_al"); al.setColor(LColor(0.22, 0.22, 0.25, 1))
+        rig.setLight(rig.attachNewNode(al))
+        dl = DirectionalLight("st_dl"); dl.setColor(LColor(0.50, 0.50, 0.52, 1))
+        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20, 15, 0)
+        rig.setLight(dlnp)
+
+        # T-shirt card (replaced per item)
+        tshirt_anchor = [None]
+
+        def _swap_tshirt(image_b64):
+            if tshirt_anchor[0] and not tshirt_anchor[0].isEmpty():
+                tshirt_anchor[0].removeNode()
+                tshirt_anchor[0] = None
+            try:
+                import base64
+                raw = base64.b64decode(image_b64)
+                ss  = StringStream(raw)
+                pnm = PNMImage()
+                if not pnm.read(ss):
+                    return
+                tex = Texture()
+                tex.load(pnm)
+                cm = CardMaker("st_tshirt")
+                cm.setFrame(-1, 1, 0, 2)
+                anchor = rig.attachNewNode("st_tshirt_anchor")
+                anchor.setPos(0, -0.51, 2)  # -Y face faces the thumbnail camera
+                np_ = anchor.attachNewNode(cm.generate())
+                np_.setTexture(tex)
+                np_.setTransparency(TransparencyAttrib.MAlpha)
+                np_.setLightOff(); np_.setShaderOff()
+                np_.setDepthWrite(False); np_.setDepthOffset(1)
+                np_.show(PMASK)
+                tshirt_anchor[0] = anchor
+            except Exception as e:
+                print(f"[SHOP_THUMB] tshirt swap error: {e}", flush=True)
+
+        # ── Off-screen buffer + camera ─────────────────────────────────────────
+        buf = self.win.makeTextureBuffer("shop_thumb_buf", BUF_W, BUF_H)
+        buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0))
+        buf.setClearColorActive(True)
+
+        cam_np = self.makeCamera(buf)
+        cam_np.reparentTo(self.render)
+        cam_np.setPos(0, 3000 - 8, 0)
+        cam_np.lookAt(rig, Point3(0, 0, 2.5))
+        lens = cam_np.node().getLens()
+        lens.setFov(28, 40)
+        lens.setNearFar(0.1, 10000)
+        cam_np.node().setCameraMask(PMASK)
+
+        orig_mask = self.camNode.getCameraMask()
+        self.camNode.setCameraMask(orig_mask & ~PMASK)
+
+        # ── Render each item ───────────────────────────────────────────────────
+        for item_id, image_b64 in items_with_img:
+            _swap_tshirt(image_b64)
+            self.graphicsEngine.renderFrame()
+            pnm = PNMImage()
+            if buf.getTexture().store(pnm):
+                out_tex = Texture()
+                out_tex.load(pnm)
+                result[item_id] = out_tex
+
+        # ── Cleanup ────────────────────────────────────────────────────────────
+        if tshirt_anchor[0] and not tshirt_anchor[0].isEmpty():
+            tshirt_anchor[0].removeNode()
+        self.graphicsEngine.removeWindow(buf)
+        cam_np.removeNode()
+        rig.removeNode()
+        self.camNode.setCameraMask(orig_mask)
+
+        return result
+
     def _draw_shop_grid_task(self, items, err, owned, task):
         self._shop_owned_ids = owned
         lbl = getattr(self, "_shop_loading_lbl", None)
@@ -1216,14 +1344,21 @@ class LoginScreenMixin:
                 parent=frame, pos=(0, 0, 0),
             )
             return task.done
-        self._draw_shop_grid(items, frame)
+        try:
+            thumb_textures = self._render_shop_thumbnails(items)
+        except Exception as e:
+            print(f"[SHOP_THUMB] RTT failed: {e}", flush=True)
+            thumb_textures = {}
+        self._draw_shop_grid(items, frame, thumb_textures)
         return task.done
 
-    def _draw_shop_grid(self, items, frame):
+    def _draw_shop_grid(self, items, frame, thumb_textures=None):
         _CARD_BG  = (0.84, 0.81, 0.93, 1.0)
         _NAME_COL = _RS_WHITE
         _PRICE_COL = _RS_GREEN
         _FREE_COL  = _RS_GREEN
+        if thumb_textures is None:
+            thumb_textures = {}
 
         total_w  = _SHOP_COLS * _SHOP_CW + (_SHOP_COLS - 1) * _SHOP_GAPX
         left_cx  = -total_w / 2 + _SHOP_CW / 2
@@ -1247,14 +1382,21 @@ class LoginScreenMixin:
                 command=self._show_shop_item_popup,
                 extraArgs=[item],
             )
-            # Thumbnail placeholder
+            # Thumbnail — RTT avatar render if available, coloured fallback otherwise
             tint_idx = item.get("id", idx) % len(_THUMB_TINTS)
-            DirectFrame(
+            thumb_frame = DirectFrame(
                 frameColor=_THUMB_TINTS[tint_idx],
                 frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CTH/2, _SHOP_CTH/2),
                 parent=card, pos=(0, 0, THUMB_CY),
                 sortOrder=6,
             )
+            rtt_tex = thumb_textures.get(item.get("id"))
+            if rtt_tex:
+                hw = _SHOP_CW / 2
+                hh = _SHOP_CTH / 2
+                thumb_frame["frameColor"] = (1, 1, 1, 1)
+                thumb_frame["image"]       = rtt_tex
+                thumb_frame["image_scale"] = (hw, 1, hh)
             # Item name
             name = item.get("name", "")
             DirectLabel(

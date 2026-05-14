@@ -479,7 +479,7 @@ def create_shop_item(token: str, b: ShopItemBody):
 def list_shop_items():
     c = _db()
     rows = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.created_at, u.username
+        """SELECT s.id, s.name, s.description, s.price, s.image_data, s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
            ORDER BY s.created_at DESC""",
     ).fetchall()

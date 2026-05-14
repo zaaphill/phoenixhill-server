@@ -428,11 +428,25 @@ class AvatarMixin:
         token = getattr(self, "_session_token", None)
         if token:
             import threading as _thr, auth_client as _ac
-            def _fetch():
+            equipped_id = getattr(self, "_equipped_tshirt_id", None)
+            def _fetch(eid=equipped_id):
                 result, _ = _ac.get_owned_items(token)
                 owned_items = (result or {}).get("items", [])
-                def _populate(task, items=owned_items):
+                # If a T-shirt is already equipped, fetch its image for the preview
+                preview_b64 = None
+                if eid:
+                    for it in owned_items:
+                        if it.get("id") == eid and it.get("image_data"):
+                            preview_b64 = it["image_data"]
+                            break
+                    if not preview_b64:
+                        full, _ = _ac.get_shop_item(eid)
+                        if full:
+                            preview_b64 = full.get("image_data")
+                def _populate(task, items=owned_items, b64=preview_b64):
                     self._populate_avatar_items(items)
+                    if b64:
+                        self._preview_apply_tshirt(b64)
                     return task.done
                 self.taskMgr.doMethodLater(0, _populate, "_populateAvatarItems", appendTask=True)
             _thr.Thread(target=_fetch, daemon=True).start()
@@ -515,6 +529,7 @@ class AvatarMixin:
             self._equipped_tshirt_id = None
             if hasattr(self, "remove_tshirt"):
                 self.remove_tshirt()
+            self._preview_apply_tshirt(None)
             token = getattr(self, "_session_token", None)
             if token:
                 _thr.Thread(target=lambda: _ac.equip_tshirt(token, None), daemon=True).start()
@@ -531,17 +546,19 @@ class AvatarMixin:
         else:
             # Equip
             self._equipped_tshirt_id = item_id
-            if image_b64 and hasattr(self, "apply_tshirt"):
-                self.apply_tshirt(image_b64)
-            elif not image_b64 and hasattr(self, "apply_tshirt"):
-                # Fetch image data then apply
-                token = getattr(self, "_session_token", None)
+            if image_b64:
+                if hasattr(self, "apply_tshirt"):
+                    self.apply_tshirt(image_b64)
+                self._preview_apply_tshirt(image_b64)
+            else:
+                # Fetch image data then apply to both in-game and preview
                 def _fetch_and_apply(iid=item_id):
                     full, _ = _ac.get_shop_item(iid)
                     if full and full.get("image_data"):
                         def _apply(task, b64=full["image_data"]):
                             if hasattr(self, "apply_tshirt"):
                                 self.apply_tshirt(b64)
+                            self._preview_apply_tshirt(b64)
                             return task.done
                         self.taskMgr.doMethodLater(0, _apply, "_applyTshirtLocal", appendTask=True)
                 _thr.Thread(target=_fetch_and_apply, daemon=True).start()
@@ -568,8 +585,53 @@ class AvatarMixin:
                 btn["text"] = "Unequip" if is_eq else "Equip"
                 btn["frameColor"] = (0.38, 0.26, 0.58, 1.0) if is_eq else (0.58, 0.18, 0.82, 1.0)
 
+    def _preview_apply_tshirt(self, image_b64):
+        """Add or replace the T-shirt card on the avatar preview rig."""
+        from panda3d.core import CardMaker, TransparencyAttrib, Filename, BitMask32
+        for attr in ('_avatar_preview_tshirt_anchor', '_avatar_preview_tshirt_np'):
+            n = getattr(self, attr, None)
+            if n and not n.isEmpty():
+                n.removeNode()
+            setattr(self, attr, None)
+        if not image_b64:
+            return
+        root  = getattr(self, '_avatar_preview_rig_root', None)
+        pmask = getattr(self, '_avatar_preview_rig_pmask', BitMask32.allOn())
+        if not root or root.isEmpty():
+            return
+        try:
+            import base64, tempfile, os as _os2
+            raw = base64.b64decode(image_b64)
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                tf.write(raw); tmp = tf.name
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
+            _os2.unlink(tmp)
+            if not tex:
+                return
+            cm = CardMaker('preview_tshirt')
+            cm.setFrame(-1, 1, 0, 2)
+            anchor = root.attachNewNode("preview_tshirt_anchor")
+            anchor.setPos(0, -0.51, 2)   # -Y side faces the preview camera at Y=-8
+            np = anchor.attachNewNode(cm.generate())
+            np.setTexture(tex)
+            np.setTransparency(TransparencyAttrib.MAlpha)
+            np.setLightOff()
+            np.setShaderOff()
+            np.setDepthWrite(False)
+            np.setDepthOffset(1)
+            np.show(pmask)
+            self._avatar_preview_tshirt_anchor = anchor
+            self._avatar_preview_tshirt_np     = np
+        except Exception as e:
+            print(f"[PREVIEW_TSHIRT] {e}", flush=True)
+
     def _build_preview_rig(self, root, colors, pmask):
         """Build a completely fresh avatar rig under root — no copyTo, no inherited state."""
+        self._avatar_preview_rig_root  = root
+        self._avatar_preview_rig_pmask = pmask
+        self._avatar_preview_tshirt_anchor = None
+        self._avatar_preview_tshirt_np     = None
+
         def box(parent, scale, pos, color_key):
             m = self.loader.loadModel("models/box")
             m.reparentTo(parent)
@@ -644,7 +706,9 @@ class AvatarMixin:
             self.graphicsEngine.removeWindow(buf)
         self._avatar_buf = None
         for attr in ('_avatar_cam_np', '_avatar_cam_pivot',
-                     '_avatar_char_copy', '_avatar_preview_root'):
+                     '_avatar_char_copy', '_avatar_preview_root',
+                     '_avatar_preview_tshirt_anchor', '_avatar_preview_tshirt_np',
+                     '_avatar_preview_rig_root'):
             node = getattr(self, attr, None)
             if node and not node.isEmpty():
                 node.removeNode()
