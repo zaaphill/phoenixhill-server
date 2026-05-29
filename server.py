@@ -120,6 +120,18 @@ def _init_db():
         c.execute("ALTER TABLE users ADD COLUMN equipped_tshirt INTEGER DEFAULT NULL")
     except Exception:
         pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN equipped_hat INTEGER DEFAULT NULL")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE shop_items ADD COLUMN category TEXT DEFAULT 'tshirt'")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE shop_items ADD COLUMN hat_data TEXT DEFAULT NULL")
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -149,9 +161,14 @@ class ShopItemBody(BaseModel):
     name:        str
     description: str = ""
     price:       int = 0
-    image_data:  str  # base64 PNG/JPG
+    image_data:  str  # base64 PNG/JPG thumbnail
+    category:    str = "tshirt"   # 'tshirt' or 'hat'
+    hat_data:    str = ""         # JSON string; only populated for hats
 
 class EquipTshirtBody(BaseModel):
+    item_id: Optional[int] = None
+
+class EquipHatBody(BaseModel):
     item_id: Optional[int] = None
 
 
@@ -351,12 +368,13 @@ def browse_published():
 def get_avatar(token: str):
     sess = _get_session(token)
     c = _db()
-    row = c.execute("SELECT avatar_colors, equipped_tshirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+    row = c.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat FROM users WHERE id=?", (sess["user_id"],)).fetchone()
     c.close()
-    equipped = int(row["equipped_tshirt"]) if row and row["equipped_tshirt"] else None
+    equipped_tshirt = int(row["equipped_tshirt"]) if row and row["equipped_tshirt"] else None
+    equipped_hat    = int(row["equipped_hat"])    if row and row["equipped_hat"]    else None
     if not row or not row["avatar_colors"]:
-        return {"colors": {}, "equipped_tshirt": equipped}
-    return {"colors": json.loads(row["avatar_colors"]), "equipped_tshirt": equipped}
+        return {"colors": {}, "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat}
+    return {"colors": json.loads(row["avatar_colors"]), "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat}
 
 
 @app.put("/api/avatar")
@@ -466,10 +484,14 @@ def create_shop_item(token: str, b: ShopItemBody):
         raise HTTPException(400, "Name required")
     if not b.image_data:
         raise HTTPException(400, "Image required")
+    category = b.category.strip().lower() if b.category else "tshirt"
+    if category not in ("tshirt", "hat"):
+        category = "tshirt"
     c = _db()
     cur = c.execute(
-        "INSERT INTO shop_items (user_id, name, description, price, image_data, created_at) VALUES (?,?,?,?,?,?)",
-        (sess["user_id"], name, b.description.strip(), max(0, b.price), b.image_data, time.time()),
+        "INSERT INTO shop_items (user_id, name, description, price, image_data, category, hat_data, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (sess["user_id"], name, b.description.strip(), max(0, b.price), b.image_data,
+         category, b.hat_data or None, time.time()),
     )
     item_id = cur.lastrowid
     c.commit()
@@ -480,7 +502,10 @@ def create_shop_item(token: str, b: ShopItemBody):
 def list_shop_items():
     c = _db()
     rows = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.image_data, s.created_at, u.username
+        """SELECT s.id, s.name, s.description, s.price, s.image_data,
+                  CASE WHEN s.hat_data IS NOT NULL THEN 'hat'
+                       ELSE COALESCE(s.category,'tshirt') END as category,
+                  s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
            ORDER BY s.created_at DESC""",
     ).fetchall()
@@ -491,7 +516,10 @@ def list_shop_items():
 def get_shop_item(item_id: int):
     c = _db()
     row = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.image_data, s.created_at, u.username
+        """SELECT s.id, s.name, s.description, s.price, s.image_data,
+                  CASE WHEN s.hat_data IS NOT NULL THEN 'hat'
+                       ELSE COALESCE(s.category,'tshirt') END as category,
+                  s.hat_data, s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
            WHERE s.id=?""",
         (item_id,),
@@ -500,6 +528,23 @@ def get_shop_item(item_id: int):
     if not row:
         raise HTTPException(404, "Item not found")
     return dict(row)
+
+@app.delete("/api/shop/items/{item_id}")
+def delete_shop_item(item_id: int, token: str):
+    sess = _get_session(token)
+    c = _db()
+    row = c.execute("SELECT user_id FROM shop_items WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        c.close()
+        raise HTTPException(404, "Item not found")
+    if row["user_id"] != sess["user_id"]:
+        c.close()
+        raise HTTPException(403, "Not your item")
+    c.execute("DELETE FROM shop_purchases WHERE item_id=?", (item_id,))
+    c.execute("DELETE FROM shop_items WHERE id=?", (item_id,))
+    c.commit()
+    c.close()
+    return {"ok": True}
 
 @app.post("/api/shop/items/{item_id}/buy")
 def buy_shop_item(item_id: int, token: str):
@@ -521,7 +566,10 @@ def get_owned_items(token: str):
     sess = _get_session(token)
     c = _db()
     rows = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.image_data, u.username
+        """SELECT s.id, s.name, s.description, s.price, s.image_data,
+                  CASE WHEN s.hat_data IS NOT NULL THEN 'hat'
+                       ELSE COALESCE(s.category,'tshirt') END as category,
+                  u.username
            FROM shop_purchases p
            JOIN shop_items s ON p.item_id = s.id
            JOIN users u ON s.user_id = u.id
@@ -537,6 +585,15 @@ def equip_tshirt_endpoint(token: str, b: EquipTshirtBody):
     sess = _get_session(token)
     c = _db()
     c.execute("UPDATE users SET equipped_tshirt=? WHERE id=?", (b.item_id, sess["user_id"]))
+    c.commit()
+    c.close()
+    return {"ok": True}
+
+@app.put("/api/avatar/equipped_hat")
+def equip_hat_endpoint(token: str, b: EquipHatBody):
+    sess = _get_session(token)
+    c = _db()
+    c.execute("UPDATE users SET equipped_hat=? WHERE id=?", (b.item_id, sess["user_id"]))
     c.commit()
     c.close()
     return {"ok": True}
@@ -582,10 +639,11 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # Load colors from DB — guaranteed up-to-date (pushed on every color pick + on login).
     try:
         uc = _db()
-        urow = uc.execute("SELECT avatar_colors, equipped_tshirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+        urow = uc.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat FROM users WHERE id=?", (sess["user_id"],)).fetchone()
         uc.close()
-        player_colors = json.loads(urow["avatar_colors"]) if urow and urow["avatar_colors"] else {}
+        player_colors   = json.loads(urow["avatar_colors"]) if urow and urow["avatar_colors"] else {}
         equipped_tshirt = int(urow["equipped_tshirt"]) if urow and urow["equipped_tshirt"] else None
+        equipped_hat    = int(urow["equipped_hat"])    if urow and urow["equipped_hat"]    else None
     except Exception:
         player_colors = {}
         equipped_tshirt = None
@@ -625,6 +683,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                 "h":         d.get("h", 0.0),
                 "colors":    d.get("colors") or {},
                 "tshirt_id": d.get("tshirt_id"),
+                "hat_id":    d.get("hat_id"),
             }
             for pid, d in _rooms.get(build_id, {}).items()
         }
@@ -647,6 +706,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         "x": 0.0, "y": 0.0, "z": 0.0, "h": 0.0,
         "colors": player_colors,
         "tshirt_id": equipped_tshirt,
+        "hat_id": equipped_hat,
     }
     _entry_log = {k: v for k, v in _rooms[build_id][player_id].items() if k != "websocket"}
     print(f"[ROOM_STORE] {username}: {_entry_log}", flush=True)
@@ -655,6 +715,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
             "type": "joined", "player_id": player_id, "username": username,
             "colors": player_colors,
             "tshirt_id": equipped_tshirt,
+            "hat_id": equipped_hat,
         }, exclude=player_id)
         print(f"[WS] {username}: joined broadcast done", flush=True)
     except Exception as _e:
@@ -726,6 +787,16 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     entry["tshirt_id"] = item_id
                 await _broadcast(build_id, {
                     "type": "equip_tshirt",
+                    "player_id": player_id,
+                    "item_id": item_id,
+                }, exclude=player_id)
+            elif msg.get("type") == "equip_hat":
+                item_id = msg.get("item_id")
+                entry = _rooms.get(build_id, {}).get(player_id)
+                if entry:
+                    entry["hat_id"] = item_id
+                await _broadcast(build_id, {
+                    "type": "equip_hat",
                     "player_id": player_id,
                     "item_id": item_id,
                 }, exclude=player_id)

@@ -47,6 +47,12 @@ class UIMixin:
         self._build_panel()
         self._build_inspector()
         self.taskMgr.add(self._status_task, "uiStatusTask")
+        self.accept("arrow_left",  self._hat_flip, ["left"])
+        self.accept("arrow_right", self._hat_flip, ["right"])
+        self.accept("arrow_up",    self._hat_flip, ["up"])
+        self.accept("arrow_down",  self._hat_flip, ["down"])
+        self.accept("k", self._hat_z_adjust_key, [1])
+        self.accept("l", self._hat_z_adjust_key, [-1])
 
     # ── Top bar ────────────────────────────────────────────────────────────
 
@@ -124,6 +130,13 @@ class UIMixin:
             command=self.cloud_save_build,
             **kw,
         )
+        self.hat_config_button = DirectButton(
+            text="Hat Config",
+            frameSize=(-0.085, 0.085, -0.032, 0.032),
+            pos=(1.385, 0, BZ),
+            command=self._open_hat_obj,
+            **kw,
+        )
         # Status label anchored to the top-right corner, always just left of
         # the panel regardless of window width.
         self._status_lbl = DirectLabel(
@@ -139,7 +152,7 @@ class UIMixin:
         # Editor-only buttons hidden at start (play mode is default)
         for w in (self.insert_brick_button, self.move_button,
                   self.scale_button, self.export_button, self.import_button,
-                  self.cloud_save_button):
+                  self.cloud_save_button, self.hat_config_button):
             w.hide()
 
         self.ui_elements += [
@@ -234,6 +247,8 @@ class UIMixin:
             (0.55, 0.28, 0.08, 1), (0.55, 0.55, 0.55, 1),
             (0.22, 0.22, 0.22, 1), (0, 0, 0, 1),
             (0.42, 0.78, 0.28, 1),  # baseplate grass default
+            (0.80, 0.60, 0.35, 1),  # wood default
+            (0.75, 0.72, 0.68, 1),  # stone default
         ]
         cols = 6
         cw, gap = 0.054, 0.006
@@ -273,30 +288,90 @@ class UIMixin:
         )
         z_tex_btns = z_tex - 0.042
         _plastic_btn = DirectButton(
-            text="Plastic", text_fg=TEXT, text_scale=0.028,
+            text="Plastic", text_fg=TEXT, text_scale=0.020,
             frameColor=MED,
-            frameSize=(-0.082, 0.082, -0.018, 0.018),
+            frameSize=(-0.055, 0.055, -0.018, 0.018),
             parent=self._ins,
-            pos=(-PW / 2 - 0.09, 0, z_tex_btns),
+            pos=(-PW / 2 - 0.165, 0, z_tex_btns),
             command=self.apply_texture_to_selected_brick,
             extraArgs=['plastic'],
         )
         _grass_btn = DirectButton(
-            text="Grass", text_fg=TEXT, text_scale=0.028,
+            text="Grass", text_fg=TEXT, text_scale=0.020,
             frameColor=MED,
-            frameSize=(-0.082, 0.082, -0.018, 0.018),
+            frameSize=(-0.055, 0.055, -0.018, 0.018),
             parent=self._ins,
-            pos=(-PW / 2 + 0.09, 0, z_tex_btns),
+            pos=(-PW / 2 - 0.055, 0, z_tex_btns),
             command=self.apply_texture_to_selected_brick,
             extraArgs=['grass'],
         )
+        _wood_btn = DirectButton(
+            text="Wood", text_fg=TEXT, text_scale=0.020,
+            frameColor=MED,
+            frameSize=(-0.055, 0.055, -0.018, 0.018),
+            parent=self._ins,
+            pos=(-PW / 2 + 0.055, 0, z_tex_btns),
+            command=self.apply_texture_to_selected_brick,
+            extraArgs=['wood'],
+        )
+        _stone_btn = DirectButton(
+            text="Stone", text_fg=TEXT, text_scale=0.020,
+            frameColor=MED,
+            frameSize=(-0.055, 0.055, -0.018, 0.018),
+            parent=self._ins,
+            pos=(-PW / 2 + 0.165, 0, z_tex_btns),
+            command=self.apply_texture_to_selected_brick,
+            extraArgs=['stone'],
+        )
+
+        # Spawn Point section
+        z_sp = z_tex_btns - 0.052
+        _sp_lbl = DirectLabel(
+            text="Type",
+            text_fg=TEXT_D, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            parent=self._ins,
+            pos=(-PW + 0.05, 0, z_sp),
+        )
+        self._spawn_btn = DirectButton(
+            text="Spawn Point: OFF",
+            text_fg=TEXT, text_scale=0.022,
+            frameColor=MED,
+            frameSize=(-0.130, 0.130, -0.020, 0.020),
+            parent=self._ins,
+            pos=(-PW / 2, 0, z_sp - 0.038),
+            command=self._toggle_spawn_point,
+        )
+
+        self._hat_tex_btn = DirectButton(
+            text="Hat Texture",
+            text_fg=TEXT, text_scale=0.022,
+            frameColor=MED,
+            frameSize=(-0.130, 0.130, -0.020, 0.020),
+            parent=self._ins,
+            pos=(-PW / 2, 0, z_sp - 0.100),
+            command=self._upload_hat_texture,
+        )
+        self._hat_tex_btn.hide()
+
+        self._hat_upload_btn = DirectButton(
+            text="Upload Hat",
+            text_fg=TEXT, text_scale=0.022,
+            frameColor=(0.20, 0.44, 0.24, 1.0),
+            frameSize=(-0.130, 0.130, -0.020, 0.020),
+            parent=self._ins,
+            pos=(-PW / 2, 0, z_sp - 0.148),
+            command=self._show_upload_hat_dialog,
+        )
+        self._hat_upload_btn.hide()
 
         self._ins.hide()
 
         self.ui_elements += [
             self._ins, self._ins_none, self.selected_brick_label,
             _color_lbl, _reset_color_btn,
-            _texture_lbl, _plastic_btn, _grass_btn,
+            _texture_lbl, _plastic_btn, _grass_btn, _wood_btn, _stone_btn,
+            _sp_lbl, self._spawn_btn, self._hat_tex_btn, self._hat_upload_btn,
         ] + _palette_btns
 
     # ── Inspector visibility ───────────────────────────────────────────────
@@ -308,13 +383,60 @@ class UIMixin:
         )
         self._ins_none.hide()
         self._ins.show()
+        self._refresh_spawn_btn()
         self._refresh_hierarchy()
+        is_hat = (brick is getattr(self, '_hat_brick', None))
+        hat_btn = getattr(self, '_hat_tex_btn', None)
+        if hat_btn:
+            if is_hat: hat_btn.show()
+            else:      hat_btn.hide()
+        upload_btn = getattr(self, '_hat_upload_btn', None)
+        if upload_btn:
+            if is_hat: upload_btn.show()
+            else:      upload_btn.hide()
+
+    def _refresh_spawn_btn(self):
+        btn = getattr(self, '_spawn_btn', None)
+        if not btn or btn.isEmpty():
+            return
+        brick = getattr(self, 'selected_brick', None)
+        if brick is None:
+            btn['text'] = "Spawn Point: OFF"
+            btn['frameColor'] = MED
+            return
+        is_sp = brick in getattr(self, 'brick_spawn_points', set())
+        btn['text']       = "Spawn Point: ON" if is_sp else "Spawn Point: OFF"
+        btn['frameColor'] = (0.18, 0.62, 0.34, 1.0) if is_sp else MED
+
+    def _toggle_spawn_point(self):
+        brick = getattr(self, 'selected_brick', None)
+        if brick is None or getattr(self, 'is_playtest', False):
+            return
+        sp = getattr(self, 'brick_spawn_points', set())
+        if brick in sp:
+            sp.discard(brick)
+        else:
+            sp.add(brick)
+        self._refresh_spawn_btn()
+
+    def _show_inspector_multi(self, count):
+        self.selected_brick_label['text'] = f"{count} bricks selected"
+        self._ins_none.hide()
+        self._ins.show()
+        self._refresh_hierarchy()
+        for attr in ('_hat_tex_btn', '_hat_upload_btn'):
+            btn = getattr(self, attr, None)
+            if btn: btn.hide()
 
     def _hide_inspector(self):
         self._ins.hide()
         self._ins_none.show()
         self.selected_brick_label['text'] = ""
         self._refresh_hierarchy()
+        self._refresh_spawn_btn()
+        for attr in ('_hat_tex_btn', '_hat_upload_btn'):
+            btn = getattr(self, attr, None)
+            if btn: btn.hide()
 
     # ── Hierarchy ──────────────────────────────────────────────────────────
 
@@ -345,7 +467,7 @@ class UIMixin:
         visible = self._h_bricks[self._scroll_off: self._scroll_off + MAX_VIS]
         for i, brick in enumerate(visible):
             name  = self._brick_names.get(brick, "Brick ?")
-            sel   = (brick is self.selected_brick)
+            sel   = (brick in self.selected_bricks)
             btn = DirectButton(
                 text=name,
                 text_fg=TEXT if sel else TEXT_D,
@@ -366,7 +488,13 @@ class UIMixin:
     def _on_hierarchy_click(self, brick):
         if self.is_playtest:
             return
-        self.select_brick(brick)
+        from panda3d.core import KeyboardButton
+        shift_held = (self.mouseWatcherNode.isButtonDown(KeyboardButton.lshift()) or
+                      self.mouseWatcherNode.isButtonDown(KeyboardButton.rshift()))
+        if shift_held:
+            self._toggle_brick_selection(brick)
+        else:
+            self.select_brick(brick)
 
     def _scroll_up(self):
         self._scroll_off = max(0, self._scroll_off - 1)
@@ -387,8 +515,17 @@ class UIMixin:
     # ── Color / scale logic ────────────────────────────────────────────────
 
     def apply_color_to_selected_brick(self, color):
-        if self.selected_brick:
-            self.apply_color_to_brick(self.selected_brick, color)
+        if not self.selected_bricks:
+            return
+        old_colors = {b: self.brick_colors.get(b, (0.5, 0.5, 0.5, 0.7))
+                      for b in self.selected_bricks}
+        for brick in self.selected_bricks:
+            self.apply_color_to_brick(brick, color)
+        def undo(oc=old_colors):
+            for b, c in oc.items():
+                if b in self.bricks:
+                    self.apply_color_to_brick(b, c)
+        self._push_undo(undo)
 
     def apply_color_to_brick(self, brick, color):
         self.brick_colors[brick] = color
@@ -399,6 +536,20 @@ class UIMixin:
                 shell.setShaderInput('brickColor', Vec4(*color))
             self.brick_grass_color[brick] = color
             return
+        if brick in self.brick_wood_shells:
+            shell = self.brick_wood_shells[brick]
+            if shell and not shell.isEmpty():
+                from panda3d.core import Vec4
+                shell.setShaderInput('brickColor', Vec4(*color))
+            self.brick_wood_color[brick] = color
+            return
+        if brick in self.brick_stone_shells:
+            shell = self.brick_stone_shells[brick]
+            if shell and not shell.isEmpty():
+                from panda3d.core import Vec4
+                shell.setShaderInput('brickColor', Vec4(*color))
+            self.brick_stone_color[brick] = color
+            return
         if brick in self.brick_hitbox_visuals:
             try:
                 self.brick_hitbox_visuals[brick].setColor(*color)
@@ -406,21 +557,52 @@ class UIMixin:
                 pass
         try:
             brick.setColor(*color)
-            brick.hide()
+            if getattr(self, '_hat_brick', None) is not brick:
+                brick.hide()
         except Exception:
             pass
 
     def reset_brick_color(self):
-        if not self.selected_brick:
+        if not self.selected_bricks:
             return
-        if self.selected_brick in self.brick_grass_shells:
-            self.apply_color_to_brick(self.selected_brick, (0.42, 0.78, 0.28, 1.0))
-        else:
-            self.apply_color_to_brick(self.selected_brick, (0.5, 0.5, 0.5, 0.7))
+        old_colors = {b: self.brick_colors.get(b, (0.5, 0.5, 0.5, 0.7))
+                      for b in self.selected_bricks}
+        for brick in self.selected_bricks:
+            if brick in self.brick_grass_shells:
+                self.apply_color_to_brick(brick, (0.42, 0.78, 0.28, 1.0))
+            elif brick in self.brick_wood_shells:
+                self.apply_color_to_brick(brick, (0.80, 0.60, 0.35, 1.0))
+            elif brick in self.brick_stone_shells:
+                self.apply_color_to_brick(brick, (0.75, 0.72, 0.68, 1.0))
+            else:
+                self.apply_color_to_brick(brick, (0.5, 0.5, 0.5, 0.7))
+        def undo(oc=old_colors):
+            for b, c in oc.items():
+                if b in self.bricks:
+                    self.apply_color_to_brick(b, c)
+        self._push_undo(undo)
 
     def apply_texture_to_selected_brick(self, texture_name):
-        if self.selected_brick:
-            self.apply_texture_to_brick(self.selected_brick, texture_name)
+        if not self.selected_bricks:
+            return
+        old_state = {}
+        for brick in self.selected_bricks:
+            if brick in self.brick_grass_shells:
+                old_state[brick] = ('grass', self.brick_grass_color.get(brick, (0.40, 0.80, 0.55, 1.0)))
+            elif brick in self.brick_wood_shells:
+                old_state[brick] = ('wood', self.brick_wood_color.get(brick, (0.80, 0.60, 0.35, 1.0)))
+            elif brick in self.brick_stone_shells:
+                old_state[brick] = ('stone', self.brick_stone_color.get(brick, (0.75, 0.72, 0.68, 1.0)))
+            else:
+                old_state[brick] = ('plastic', self.brick_colors.get(brick, (0.5, 0.5, 0.5, 0.7)))
+        for brick in self.selected_bricks:
+            self.apply_texture_to_brick(brick, texture_name)
+        def undo(os=old_state):
+            for b, (tex, col) in os.items():
+                if b in self.bricks:
+                    self.apply_texture_to_brick(b, tex)
+                    self.apply_color_to_brick(b, col)
+        self._push_undo(undo)
 
     def apply_texture_to_brick(self, brick, texture_name):
         if texture_name == 'plastic':
@@ -428,33 +610,584 @@ class UIMixin:
             if shell and not shell.isEmpty():
                 shell.removeNode()
             self.brick_grass_color.pop(brick, None)
+            wshell = self.brick_wood_shells.pop(brick, None)
+            if wshell and not wshell.isEmpty():
+                wshell.removeNode()
+            self.brick_wood_color.pop(brick, None)
+            sshell = self.brick_stone_shells.pop(brick, None)
+            if sshell and not sshell.isEmpty():
+                sshell.removeNode()
+            self.brick_stone_color.pop(brick, None)
             self.brick_last_scale.pop(brick, None)
             self.brick_last_pos.pop(brick, None)
             visual = self.brick_hitbox_visuals.get(brick)
             if visual and not visual.isEmpty():
                 visual.show()
         elif texture_name == 'grass':
-            if brick not in self.brick_grass_color:
-                self.brick_grass_color[brick] = (0.40, 0.80, 0.55, 1.0)
+            wshell = self.brick_wood_shells.pop(brick, None)
+            if wshell and not wshell.isEmpty():
+                wshell.removeNode()
+            self.brick_wood_color.pop(brick, None)
+            sshell = self.brick_stone_shells.pop(brick, None)
+            if sshell and not sshell.isEmpty():
+                sshell.removeNode()
+            self.brick_stone_color.pop(brick, None)
+            self.brick_grass_color[brick] = self.brick_colors.get(brick, (0.40, 0.80, 0.55, 1.0))
             self._rebuild_grass_shell(brick)
+            visual = self.brick_hitbox_visuals.get(brick)
+            if visual and not visual.isEmpty():
+                visual.hide()
+        elif texture_name == 'wood':
+            shell = self.brick_grass_shells.pop(brick, None)
+            if shell and not shell.isEmpty():
+                shell.removeNode()
+            self.brick_grass_color.pop(brick, None)
+            sshell = self.brick_stone_shells.pop(brick, None)
+            if sshell and not sshell.isEmpty():
+                sshell.removeNode()
+            self.brick_stone_color.pop(brick, None)
+            self.brick_wood_color[brick] = self.brick_colors.get(brick, (0.80, 0.60, 0.35, 1.0))
+            self._rebuild_wood_shell(brick)
+            visual = self.brick_hitbox_visuals.get(brick)
+            if visual and not visual.isEmpty():
+                visual.hide()
+        elif texture_name == 'stone':
+            shell = self.brick_grass_shells.pop(brick, None)
+            if shell and not shell.isEmpty():
+                shell.removeNode()
+            self.brick_grass_color.pop(brick, None)
+            wshell = self.brick_wood_shells.pop(brick, None)
+            if wshell and not wshell.isEmpty():
+                wshell.removeNode()
+            self.brick_wood_color.pop(brick, None)
+            self.brick_stone_color[brick] = self.brick_colors.get(brick, (0.75, 0.72, 0.68, 1.0))
+            self._rebuild_stone_shell(brick)
             visual = self.brick_hitbox_visuals.get(brick)
             if visual and not visual.isEmpty():
                 visual.hide()
 
     def reset_brick_scaling(self):
-        if not self.selected_brick:
+        if not self.selected_bricks:
             return
-        default = self.brick_default_scale.get(self.selected_brick)
-        if default:
-            self.selected_brick.setScale(default)
-        if self.selected_brick in self.brick_hitbox_visuals:
-            self.update_brick_hitbox_visual_scale(
-                self.selected_brick, self.brick_hitbox_visuals[self.selected_brick])
+        for brick in self.selected_bricks:
+            default = self.brick_default_scale.get(brick)
+            if default:
+                brick.setScale(default)
+            if brick in self.brick_hitbox_visuals:
+                self.update_brick_hitbox_visual_scale(
+                    brick, self.brick_hitbox_visuals[brick])
         self.create_scale_handles()
 
     def close_scale_controls(self):
         self.is_scale_mode = False
         self.clear_selection()
+
+    def _open_hat_obj(self):
+        import tkinter as _tk
+        from tkinter import filedialog as _fd
+        _root = _tk.Tk()
+        _root.withdraw()
+        _root.attributes('-topmost', True)
+        path = _fd.askopenfilename(
+            title="Import Hat (.obj)",
+            filetypes=[("OBJ files", "*.obj"), ("All files", "*.*")],
+        )
+        _root.destroy()
+        if path:
+            self._load_hat_for_editor(path)
+
+    def _load_hat_for_editor(self, path):
+        from panda3d.core import Filename, NodePath, Vec3, TransparencyAttrib
+
+        # Remove previous hat brick if it's still in the scene
+        existing = getattr(self, '_hat_brick', None)
+        if existing and not existing.isEmpty():
+            if existing in self.selected_bricks:
+                self.selected_bricks.remove(existing)
+            if self.selected_brick is existing:
+                self.selected_brick = None
+            self._destroy_brick(existing)
+        self._hat_brick = None
+
+        try:
+            hat_model = self.loader.loadModel(Filename.fromOsSpecific(path))
+        except Exception as _e:
+            print(f"[HAT] load error: {_e}", flush=True)
+            return
+        if not hat_model:
+            print("[HAT] loader returned None — OBJ plugin may be missing", flush=True)
+            return
+
+        # Fix OBJ Y-up → Panda3D Z-up: rotate -90° around X axis (roll)
+        hat_model.setR(-90)
+
+        # Create the hat anchor (empty NodePath, registered in the brick system
+        # so it can be selected, moved, and scaled in the editor)
+        hat_brick = NodePath("hat_brick")
+        hat_brick.reparentTo(self.render)
+        hat_brick.setScale(2, 2, 2)
+        if not self.is_playtest:
+            fwd = self.camera.getQuat().getForward()
+            hat_brick.setPos(self.camera.getPos() + fwd * 5)
+        else:
+            cp = self.character.getPos()
+            hat_brick.setPos(cp.x, cp.y, cp.z + 4)
+
+        # Parent hat model to anchor; position at center of the unit-space brick
+        hat_model.reparentTo(hat_brick)
+        hat_model.setPos(0.5, 0.5, 0.5)
+        # Fixed-function pipeline: auto-shader + setTwoSided causes black patches
+        # at certain angles because the auto-shader doesn't flip normals for back
+        # faces. Fixed-function has built-in two-sided lighting that does.
+        hat_model.setShaderOff()
+        hat_model.setTwoSided(True)
+
+        # Semi-transparent bounding box — visible in editor for selection feedback,
+        # faint enough not to obscure the hat mesh itself
+        hat_vis = self.create_solid_box(
+            self.brick_base_width, self.brick_base_depth, self.brick_base_height,
+            (0.3, 0.5, 1.0, 0.12),
+        )
+        hat_vis.reparentTo(self.render)
+        hat_vis.setTransparency(TransparencyAttrib.MAlpha)
+
+        # Register in the brick system (skip _grid_add so the character
+        # doesn't physically collide with the hat brick)
+        self.brick_hitbox_visuals[hat_brick] = hat_vis
+        self.brick_default_scale[hat_brick]  = Vec3(hat_brick.getScale())
+        self.brick_colors[hat_brick]         = (1, 1, 1, 1)
+        self.update_brick_hitbox_visual_scale(hat_brick, hat_vis)
+        self.update_brick_collision(hat_brick)
+        self.bricks.append(hat_brick)
+        self.add_hierarchy_entry(hat_brick, "Hat")
+
+        self._hat_brick       = hat_brick
+        self._hat_model       = hat_model
+        self._hat_vis         = hat_vis
+        self._hat_obj_path    = path
+        self._hat_texture_path = None
+        print(f"[HAT] loaded: {path}", flush=True)
+
+    def _hat_flip(self, direction):
+        """Rotate the hat model 90° in the given direction (editor only)."""
+        if self.is_playtest:
+            return
+        hat_brick = getattr(self, '_hat_brick', None)
+        hat_model = getattr(self, '_hat_model', None)
+        if not hat_brick or hat_brick.isEmpty():
+            return
+        if self.selected_brick is not hat_brick:
+            return
+        if not hat_model or hat_model.isEmpty():
+            return
+        if direction == "left":
+            hat_model.setH(hat_model.getH() + 90)
+        elif direction == "right":
+            hat_model.setH(hat_model.getH() - 90)
+        elif direction == "up":
+            hat_model.setP(hat_model.getP() - 90)
+        elif direction == "down":
+            hat_model.setP(hat_model.getP() + 90)
+
+    def _apply_hat_mode(self):
+        """In play mode reparent hat_model directly under render (bypassing
+        character.setShaderOff) and track the head with a per-frame task.
+        In editor mode restore the model to its hat_brick anchor."""
+        hat_brick = getattr(self, '_hat_brick', None)
+        hat_model = getattr(self, '_hat_model', None)
+        hat_vis   = getattr(self, '_hat_vis', None)
+
+        self.taskMgr.remove("_hatFollowTask")
+
+        if not hat_brick or hat_brick.isEmpty():
+            return
+        if not hat_model or hat_model.isEmpty():
+            return
+
+        if self.is_playtest:
+            # Save local transform (hat_brick has no rotation → local == world)
+            self._hat_saved_hpr   = (hat_model.getH(), hat_model.getP(), hat_model.getR())
+            self._hat_saved_scale = hat_model.getScale()
+            # World scale = hat_brick.scale × hat_model.local_scale
+            bs = hat_brick.getScale()
+            ls = self._hat_saved_scale
+            self._hat_world_scale = (bs.x * ls.x, bs.y * ls.y, bs.z * ls.z)
+            # Reparent directly to render — completely outside the
+            # character subtree that has setShaderOff, so textures show
+            hat_model.reparentTo(self.render)
+            hat_model.setScale(*self._hat_world_scale)
+            hat_model.setHpr(*self._hat_saved_hpr)
+            if hat_vis and not hat_vis.isEmpty():
+                hat_vis.hide()
+            self.taskMgr.add(self._hat_follow_task, "_hatFollowTask")
+        else:
+            # Restore to hat_brick with original local transform
+            hat_model.reparentTo(hat_brick)
+            hat_model.setPos(0.5, 0.5, 0.5)
+            hpr   = getattr(self, '_hat_saved_hpr',   None)
+            scale = getattr(self, '_hat_saved_scale', None)
+            if hpr   is not None: hat_model.setHpr(*hpr)
+            if scale is not None: hat_model.setScale(scale)
+            hat_model.setShaderOff()
+            if hat_vis and not hat_vis.isEmpty():
+                hat_vis.show()
+                self.update_brick_hitbox_visual_scale(hat_brick, hat_vis)
+
+    def _hat_follow_task(self, task):
+        from direct.task import Task
+        hat_model = getattr(self, '_hat_model', None)
+        if not hat_model or hat_model.isEmpty():
+            return Task.done
+        head_pos = self.head.getPos(self.render)
+        z_adj    = getattr(self, '_hat_z_offset', 0.0)
+        hat_model.setPos(head_pos.x, head_pos.y, head_pos.z + 0.55 + z_adj)
+        h, p, r  = getattr(self, '_hat_saved_hpr', (0.0, 0.0, -90.0))
+        hat_model.setHpr(self.character.getH() + h, p, r)
+        return Task.cont
+
+    def _hat_z_adjust_key(self, direction):
+        """K (direction=1) moves hat up; L (direction=-1) moves hat down."""
+        if not self.is_playtest:
+            return
+        if getattr(self, '_hat_model', None) is None:
+            return
+        self._hat_z_offset = getattr(self, '_hat_z_offset', 0.0) + direction * 0.2
+
+    def _upload_hat_texture(self):
+        """Open a file dialog to pick an image and apply it to the hat model."""
+        hat_model = getattr(self, '_hat_model', None)
+        if not hat_model or hat_model.isEmpty():
+            return
+        import tkinter as _tk
+        from tkinter import filedialog as _fd
+        from panda3d.core import Filename
+        _root = _tk.Tk()
+        _root.withdraw()
+        _root.attributes('-topmost', True)
+        path = _fd.askopenfilename(
+            title="Hat Texture",
+            filetypes=[
+                ("Image files", "*.png *.jpg *.jpeg *.bmp *.tga *.webp"),
+                ("All files", "*.*"),
+            ],
+        )
+        _root.destroy()
+        if not path:
+            return
+        try:
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(path))
+            if tex:
+                hat_model.setTexture(tex, 1)
+                self._hat_texture_path = path
+                print(f"[HAT] texture applied: {path}", flush=True)
+            else:
+                print("[HAT] texture load returned None", flush=True)
+        except Exception as _e:
+            print(f"[HAT] texture error: {_e}", flush=True)
+
+    def _show_upload_hat_dialog(self):
+        hat_brick = getattr(self, '_hat_brick', None)
+        hat_model = getattr(self, '_hat_model', None)
+        obj_path  = getattr(self, '_hat_obj_path', None)
+        token     = getattr(self, '_session_token', None)
+        if not hat_brick or hat_brick.isEmpty() or not hat_model or not obj_path or not token:
+            return
+
+        existing = getattr(self, '_hat_upload_popup', None)
+        if existing:
+            try: existing.destroy()
+            except Exception: pass
+
+        from direct.gui.DirectGui import DirectFrame, DirectLabel, DirectButton, DirectEntry
+        from panda3d.core import TextNode
+
+        DARK2  = (0.10, 0.11, 0.16, 0.96)
+        MED2   = (0.17, 0.19, 0.26, 1.0)
+        BTN2   = (0.20, 0.44, 0.24, 1.0)
+        CAN2   = (0.30, 0.30, 0.40, 1.0)
+        TEXT2  = (0.88, 0.90, 0.95, 1.0)
+        GRAY2  = (0.54, 0.57, 0.65, 1.0)
+        RED2   = (0.90, 0.30, 0.30, 1.0)
+        GREEN2 = (0.40, 0.88, 0.50, 1.0)
+
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.75),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=500, state='normal',
+        )
+        self._hat_upload_popup = overlay
+
+        card = DirectFrame(
+            frameColor=DARK2,
+            frameSize=(-0.55, 0.55, -0.38, 0.38),
+            parent=overlay, sortOrder=501,
+        )
+
+        DirectLabel(
+            text="Upload Hat to Shop",
+            text_fg=TEXT2, text_scale=0.034,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.28),
+        )
+
+        DirectLabel(
+            text="Name",
+            text_fg=GRAY2, text_scale=0.024,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.50, 0, 0.14),
+        )
+        name_bg = DirectFrame(
+            frameColor=MED2,
+            frameSize=(-0.48, 0.48, -0.030, 0.030),
+            parent=card, pos=(0, 0, 0.085),
+        )
+        name_entry = DirectEntry(
+            text_fg=TEXT2, text_scale=0.026,
+            frameColor=(0, 0, 0, 0),
+            width=36, numLines=1,
+            parent=name_bg, pos=(-0.46, 0, -0.010),
+        )
+
+        DirectLabel(
+            text="Description",
+            text_fg=GRAY2, text_scale=0.024,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.50, 0, -0.02),
+        )
+        desc_bg = DirectFrame(
+            frameColor=MED2,
+            frameSize=(-0.48, 0.48, -0.030, 0.030),
+            parent=card, pos=(0, 0, -0.075),
+        )
+        desc_entry = DirectEntry(
+            text_fg=TEXT2, text_scale=0.026,
+            frameColor=(0, 0, 0, 0),
+            width=36, numLines=1,
+            parent=desc_bg, pos=(-0.46, 0, -0.010),
+        )
+
+        status_lbl = DirectLabel(
+            text="",
+            text_fg=GREEN2, text_scale=0.024,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, -0.175),
+        )
+
+        def _cancel():
+            p = getattr(self, '_hat_upload_popup', None)
+            if p:
+                try: p.destroy()
+                except Exception: pass
+            self._hat_upload_popup = None
+
+        def _publish():
+            import threading as _thr
+            item_name = name_entry.get().strip()
+            if not item_name:
+                status_lbl['text'] = "Enter a name."
+                status_lbl['text_fg'] = RED2
+                return
+            item_desc = desc_entry.get().strip()
+            status_lbl['text'] = "Packaging..."
+            status_lbl['text_fg'] = GRAY2
+
+            # Guard: hat_brick/hat_model may have been removed since dialog opened
+            if hat_brick.isEmpty() or hat_model.isEmpty():
+                status_lbl['text'] = "Hat was removed — reload it first."
+                status_lbl['text_fg'] = RED2
+                return
+
+            # Read all Panda3D NodePath values NOW on the main thread —
+            # accessing them inside a background thread causes the assertion crash.
+            bs = hat_brick.getScale()
+            ms = hat_model.getScale()
+            hpr_now = getattr(self, '_hat_saved_hpr', None)
+            if hpr_now is None:
+                hpr_now = (hat_model.getH(), hat_model.getP(), hat_model.getR())
+            brick_scale_v = [bs.x, bs.y, bs.z]
+            model_scale_v = [ms.x, ms.y, ms.z]
+            model_hpr_v   = list(hpr_now)
+            z_offset_v    = getattr(self, '_hat_z_offset', 0.0)
+            tex_path_v    = getattr(self, '_hat_texture_path', None)
+
+            def worker(bsv=brick_scale_v, msv=model_scale_v, hprv=model_hpr_v,
+                       zov=z_offset_v, tpv=tex_path_v):
+                import base64, tempfile, json as _json, os as _os, re as _re
+                from panda3d.core import PNMImage, Filename as _Fn, BitMask32
+                from panda3d.core import Camera, PerspectiveLens
+                try:
+                    # -- OBJ bytes ------------------------------------------------
+                    with open(obj_path, 'rb') as fh:
+                        obj_raw = fh.read()
+                    obj_b64 = base64.b64encode(obj_raw).decode()
+
+                    # -- MTL file (materials) — look for mtllib line in OBJ -------
+                    mtl_b64  = None
+                    mtl_name = None
+                    try:
+                        obj_text = obj_raw.decode('utf-8', errors='replace')
+                        m = _re.search(r'^mtllib\s+(.+)$', obj_text, _re.MULTILINE)
+                        if m:
+                            mtl_name = m.group(1).strip()
+                            mtl_path = _os.path.join(_os.path.dirname(obj_path), mtl_name)
+                            if _os.path.exists(mtl_path):
+                                with open(mtl_path, 'rb') as fh:
+                                    mtl_b64 = base64.b64encode(fh.read()).decode()
+                    except Exception as _me:
+                        print(f"[HAT_UPLOAD] MTL read: {_me}", flush=True)
+
+                    # -- Texture bytes (if any) -----------------------------------
+                    tex_b64 = None
+                    if tpv and _os.path.exists(tpv):
+                        img = PNMImage()
+                        img.read(_Fn.fromOsSpecific(tpv))
+                        if img.getXSize() > 512 or img.getYSize() > 512:
+                            scaled = PNMImage(512, 512)
+                            scaled.gaussianFilterFrom(1.0, img)
+                            img = scaled
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                            tmp = tf.name
+                        img.write(_Fn.fromOsSpecific(tmp))
+                        with open(tmp, 'rb') as fh:
+                            tex_b64 = base64.b64encode(fh.read()).decode()
+                        _os.unlink(tmp)
+
+                    # -- Transform metadata (plain Python values, no NodePath) ----
+                    hat_data = _json.dumps({
+                        "obj_b64":     obj_b64,
+                        "mtl_b64":     mtl_b64,
+                        "mtl_name":    mtl_name,
+                        "texture_b64": tex_b64,
+                        "brick_scale": bsv,
+                        "model_scale": msv,
+                        "model_hpr":   hprv,
+                        "z_offset":    zov,
+                    })
+                except Exception as e:
+                    def _err(task, msg=str(e)):
+                        status_lbl['text'] = f"Pack error: {msg[:40]}"
+                        status_lbl['text_fg'] = RED2
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _err, "_hatUploadErr", appendTask=True)
+                    return
+
+                # -- Thumbnail render (hat model only, 256×256) -------------------
+                def _do_thumb_and_upload(task):
+                    try:
+                        PMASK = BitMask32.bit(8)
+                        BUF_W, BUF_H = 256, 256
+
+                        # Load a fresh copy of the hat for thumbnail render
+                        from panda3d.core import Filename as _Fn2
+                        thumb_model = self.loader.loadModel(_Fn2.fromOsSpecific(obj_path))
+                        if thumb_model:
+                            thumb_model.setR(-90)
+                            thumb_model.reparentTo(self.render)
+                            thumb_model.setPos(0, 5000, 5)
+                            thumb_model.setShaderOff()
+                            thumb_model.setTwoSided(True)
+                            if tex_b64:
+                                tex_p2 = getattr(self, '_hat_texture_path', None)
+                                if tex_p2:
+                                    tex2 = self.loader.loadTexture(_Fn2.fromOsSpecific(tex_p2))
+                                    if tex2:
+                                        thumb_model.setTexture(tex2, 1)
+                            thumb_model.show(PMASK)
+
+                            buf = self.win.makeTextureBuffer("hat_thumb", BUF_W, BUF_H)
+                            from panda3d.core import LColor
+                            buf.setClearColor(LColor(0.20, 0.20, 0.28, 1.0))
+                            buf.setClearColorActive(True)
+
+                            _cn = Camera("hat_thumb_cam")
+                            _lens = PerspectiveLens()
+                            _lens.setFov(40)
+                            _lens.setNearFar(0.1, 10000)
+                            _cn.setLens(_lens)
+                            _cn.setCameraMask(PMASK)
+                            cam_np = self.render.attachNewNode(_cn)
+                            cam_np.setPos(0, 5000 - 8, 5)
+                            from panda3d.core import Point3
+                            cam_np.lookAt(Point3(0, 5000, 5))
+                            _dr = buf.makeDisplayRegion()
+                            _dr.setSort(10)
+                            _dr.setCamera(cam_np)
+                            orig_mask = self.camNode.getCameraMask()
+                            self.camNode.setCameraMask(orig_mask & ~PMASK)
+
+                            self.graphicsEngine.renderFrame()
+                            rtex = buf.getTexture()
+                            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+                            pnm = PNMImage()
+                            thumb_b64 = ""
+                            if rtex.store(pnm):
+                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                                    tmp2 = tf.name
+                                pnm.write(_Fn2.fromOsSpecific(tmp2))
+                                with open(tmp2, 'rb') as fh:
+                                    thumb_b64 = base64.b64encode(fh.read()).decode()
+                                import os as _os2; _os2.unlink(tmp2)
+
+                            self.graphicsEngine.removeWindow(buf)
+                            cam_np.removeNode()
+                            thumb_model.removeNode()
+                            self.camNode.setCameraMask(orig_mask)
+                        else:
+                            thumb_b64 = ""
+                    except Exception as e:
+                        print(f"[HAT_THUMB] {e}", flush=True)
+                        thumb_b64 = ""
+
+                    import threading as _thr2, auth_client as _ac
+                    def _upload():
+                        # Embed hat_data inside image_data so no server schema changes
+                        # are required. The Render server stores image_data as-is.
+                        # Format: <thumb_b64>|HATDATA|<base64(hat_data_json)>
+                        hat_data_encoded = base64.b64encode(hat_data.encode()).decode()
+                        combined = thumb_b64 + "|HATDATA|" + hat_data_encoded
+                        result, err = _ac.upload_shop_item(
+                            token, item_name, item_desc, 0, combined,
+                            category="hat", hat_data="")
+                        def _done(task, ok=(result is not None), err=err):
+                            if ok:
+                                status_lbl['text'] = "Published!"
+                                status_lbl['text_fg'] = GREEN2
+                            else:
+                                status_lbl['text'] = f"Error: {(err or '')[:40]}"
+                                status_lbl['text_fg'] = RED2
+                            return task.done
+                        self.taskMgr.doMethodLater(0, _done, "_hatUploadDone", appendTask=True)
+                    _thr2.Thread(target=_upload, daemon=True).start()
+                    return task.done
+
+                self.taskMgr.doMethodLater(0, _do_thumb_and_upload, "_hatThumbUpload", appendTask=True)
+
+            def _set_packaging(task):
+                status_lbl['text'] = "Packaging..."
+                status_lbl['text_fg'] = GRAY2
+                import threading as _thr3
+                _thr3.Thread(target=worker, daemon=True).start()
+                return task.done
+            self.taskMgr.doMethodLater(0, _set_packaging, "_hatPackage", appendTask=True)
+
+        DirectButton(
+            text="Publish",
+            text_fg=TEXT2, text_scale=0.028,
+            frameColor=BTN2,
+            frameSize=(-0.13, 0.13, -0.032, 0.032),
+            parent=card, pos=(-0.18, 0, -0.29),
+            relief=1, command=_publish,
+        )
+        DirectButton(
+            text="Cancel",
+            text_fg=GRAY2, text_scale=0.026,
+            frameColor=CAN2,
+            frameSize=(-0.10, 0.10, -0.028, 0.028),
+            parent=card, pos=(0.26, 0, -0.29),
+            relief=1, command=_cancel,
+        )
 
     def _on_window_event(self, window):
         # Only the background bar width needs updating; buttons and status
@@ -508,14 +1241,16 @@ class UIMixin:
             return
         self.is_playtest = not self.is_playtest
         if self.is_playtest:
-            # Switched TO play mode
+            # Switched TO play mode — reset to neutral first so the overlap
+            # fallback in spawn_unstuck doesn't anchor to the editor position
+            self.character.setPos(0, 0, 50)
             self.spawn_unstuck()
             self.character.show()
             self.exit_button['text'] = "Edit"   # clicking will go to editor
             self._panel.hide()
             for w in (self.insert_brick_button, self.move_button,
                       self.scale_button, self.export_button, self.import_button,
-                      self.cloud_save_button):
+                      self.cloud_save_button, self.hat_config_button):
                 w.hide()
             self.clear_selection()
             self.is_move_mode  = False
@@ -524,9 +1259,12 @@ class UIMixin:
             self.scale_button['text'] = "Scale"
             self.cam_distance = 20
             self.cam_angle.set(0, 20)
-            self.camLens.setFov(60)
+            self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
+            self._apply_hat_mode()
         else:
             # Switched TO editor mode
+            if getattr(self, 'is_first_person', False):
+                self._exit_first_person()
             self.character.hide()
             self.exit_button['text'] = "Play"   # clicking will go to play
             self._panel.show()
@@ -534,12 +1272,13 @@ class UIMixin:
                       self.scale_button, self.export_button, self.import_button,
                       self.cloud_save_button):
                 w.show()
+            if getattr(self, '_session_username', None) == "bob":
+                self.hat_config_button.show()
             self.shift_lock = False
             if self.is_rotating:
                 self.is_rotating = False
-            props = WindowProperties()
-            props.setCursorHidden(False)
-            self.win.requestProperties(props)
+            self._restore_cursor()
             self.camera.setPos(0, -30, 18)
             self.camera.lookAt(Point3(0, 0, 1))
-            self.camLens.setFov(80)
+            self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
+            self._apply_hat_mode()

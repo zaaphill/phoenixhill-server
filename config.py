@@ -11,7 +11,7 @@ if not os.path.exists(_CFG):
 
 # Write default config if missing
 if not os.path.exists(_CFG):
-    with open(_CFG, "w") as _f:
+    with open(_CFG, "w", encoding="utf-8") as _f:
         _f.write(
             "# PhoenixHill server configuration\n"
             "#\n"
@@ -32,7 +32,7 @@ def get():
     """Return a dict with connection settings read from server.cfg."""
     data = {"host": "localhost", "port": "8000"}
     try:
-        with open(_CFG) as f:
+        with open(_CFG, encoding="utf-8") as f:
             for raw in f:
                 line = raw.strip()
                 if line and not line.startswith("#") and "=" in line:

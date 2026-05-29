@@ -368,12 +368,14 @@ class MultiplayerMixin:
             colors_in_state = {pid: bool(d.get("colors")) for pid, d in players.items()}
             print(f"[WS_RECV] type=state player_count={len(players)} colors_present={colors_in_state}", flush=True)
             for pid, d in players.items():
-                self._add_remote_player(pid, d.get("username", pid), d.get("colors"), tshirt_id=d.get("tshirt_id"))
+                self._add_remote_player(pid, d.get("username", pid), d.get("colors"),
+                                        tshirt_id=d.get("tshirt_id"), hat_id=d.get("hat_id"))
                 self._update_remote_player(pid, d)
             self._update_leaderboard()
         elif t == "joined":
             print(f"[WS_RECV] type=joined pid={msg.get('player_id')} username={msg.get('username')!r} colors={msg.get('colors')}", flush=True)
-            self._add_remote_player(msg["player_id"], msg.get("username", ""), msg.get("colors"), tshirt_id=msg.get("tshirt_id"))
+            self._add_remote_player(msg["player_id"], msg.get("username", ""), msg.get("colors"),
+                                    tshirt_id=msg.get("tshirt_id"), hat_id=msg.get("hat_id"))
             self._update_leaderboard()
             self._broadcast_my_colors()
         elif t == "left":
@@ -402,6 +404,11 @@ class MultiplayerMixin:
                     ).start()
                 else:
                     self._apply_tshirt_to_remote(pid, None)
+        elif t == "equip_hat":
+            pid = msg.get("player_id")
+            item_id = msg.get("item_id")
+            if pid and pid in self._remote_players:
+                self._remote_players[pid]["hat_id"] = item_id
 
     # ── Disconnect popup ─────────────────────────────────────────────────
 
@@ -459,7 +466,7 @@ class MultiplayerMixin:
         box.setTextureOff(1)
         return box
 
-    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None):
+    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None, hat_id=None):
         if pid in self._remote_players:
             return
         # Ignore ghost entries for our own account (zombie from a previous session
@@ -555,6 +562,7 @@ class MultiplayerMixin:
             "interp_pos": None, "interp_h": 0.0,
             "face_np": face_np, "face_frame": 0, "face_anim_t": 0.0,
             "tshirt_anchor": None, "tshirt_np": None,
+            "hat_id": hat_id,
         }
         if tshirt_id:
             threading.Thread(

@@ -94,17 +94,21 @@ def put_game_settings(token, build_id, thumbnail, description, name=""):
 
 # ── Shop API ──────────────────────────────────────────────────────────────────
 
-def upload_shop_item(token, name, description, price, image_b64):
+def upload_shop_item(token, name, description, price, image_b64, category="tshirt", hat_data=""):
     return _request("POST", "/api/shop/items",
                     {"name": name, "description": description,
-                     "price": price, "image_data": image_b64},
-                    params={"token": token}, timeout=30)
+                     "price": price, "image_data": image_b64,
+                     "category": category, "hat_data": hat_data},
+                    params={"token": token}, timeout=60)
 
 def list_shop_items():
     return _request("GET", "/api/shop/items")
 
 def get_shop_item(item_id):
-    return _request("GET", f"/api/shop/items/{item_id}")
+    return _request("GET", f"/api/shop/items/{item_id}", timeout=60)
+
+def delete_shop_item(token, item_id):
+    return _request("DELETE", f"/api/shop/items/{item_id}", params={"token": token})
 
 def buy_shop_item(token, item_id):
     return _request("POST", f"/api/shop/items/{item_id}/buy",
@@ -115,4 +119,8 @@ def get_owned_items(token):
 
 def equip_tshirt(token, item_id_or_none):
     return _request("PUT", "/api/avatar/equipped_tshirt",
+                    {"item_id": item_id_or_none}, params={"token": token})
+
+def equip_hat(token, item_id_or_none):
+    return _request("PUT", "/api/avatar/equipped_hat",
                     {"item_id": item_id_or_none}, params={"token": token})

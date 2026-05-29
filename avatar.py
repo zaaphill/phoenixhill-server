@@ -109,7 +109,7 @@ class AvatarMixin:
 
     # ── Avatar screen ──────────────────────────────────────────────────────
 
-    def _build_avatar_screen(self, subtab="items"):
+    def _build_avatar_screen(self, subtab="items", items_filter="tshirt"):
         self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
@@ -119,6 +119,8 @@ class AvatarMixin:
         self._avatar_btns         = {}
         if not hasattr(self, "_equipped_tshirt_id"):
             self._equipped_tshirt_id = None
+        if not hasattr(self, "_equipped_hat_id"):
+            self._equipped_hat_id = None
 
         _RS_BG     = (0.78, 0.75, 0.88, 1.0)
         _RS_NAV    = (0.55, 0.45, 0.76, 1.0)
@@ -145,19 +147,20 @@ class AvatarMixin:
                               parent=nav, pos=(-1.55, 0, -0.008))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
         for i, (tab_text, tab_cmd) in enumerate([
-            ("Games",  self._build_browse_screen),
-            ("Avatar", self._build_avatar_screen),
-            ("Shop",   self._build_shop_screen),
-            ("Build",  self._build_main_menu),
+            ("Games",    self._build_browse_screen),
+            ("Avatar",   self._build_avatar_screen),
+            ("Shop",     self._build_shop_screen),
+            ("Build",    self._build_main_menu),
+            ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 1)
             DirectButton(
                 text=tab_text,
                 text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.034,
+                text_scale=0.032,
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.10, 0.10, -0.052, 0.052),
-                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.052, 0.052),
+                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
@@ -202,7 +205,7 @@ class AvatarMixin:
             self._build_avatar_char(bg, x_off=-0.28, z_off=-0.08)
             self._build_avatar_palette(bg, left=0.16, top=0.20, sw=0.082, sh=0.078, pad=0.007)
         else:
-            self._build_avatar_items_content(bg)
+            self._build_avatar_items_content(bg, items_filter=items_filter)
 
     # ── Colors tab content (2D clickable char + palette) ──────────────────
 
@@ -263,7 +266,8 @@ class AvatarMixin:
 
     # ── Items tab content (3D preview + empty list) ────────────────────────
 
-    def _build_avatar_items_content(self, parent):
+    def _build_avatar_items_content(self, parent, items_filter="tshirt"):
+        self._avatar_items_filter = items_filter
         CARD_W = 0.50
         CARD_H = 0.60
         CARD_X = -0.75
@@ -312,18 +316,22 @@ class AvatarMixin:
         buf.setClearColorActive(True)
         self._avatar_buf = buf
 
-        # ── Camera (officially supported RTT path) ─────────────────────────
-        cam_np = self.makeCamera(buf)
-        cam_np.reparentTo(pivot)
+        # ── Camera — built manually so no inherited transform from self.camera ──
+        # makeCamera() attaches to self.camera which carries the main camera's
+        # rotation; reparentTo() preserves local HPR causing a tilted view.
+        # 400×480 → aspect 0.833 → hFOV 32°, vFOV = 2*atan(tan(16°)/0.833) ≈ 38°
+        _camNode = Camera("avatar_preview_cam")
+        _lens = PerspectiveLens()
+        _lens.setFov(32, 38)
+        _lens.setNearFar(0.1, 1000)
+        _camNode.setLens(_lens)
+        _camNode.setCameraMask(PMASK)
+        cam_np = pivot.attachNewNode(_camNode)
         cam_np.setPos(0, -8, 0)
         cam_np.lookAt(preview_root, Point3(0, 0, 3))
-        lens = cam_np.node().getLens()
-        # Must set aspect explicitly — makeCamera may use main-window aspect by default.
-        # setFov(h) then derives vFOV from the given aspect.
-        lens.setAspectRatio(CARD_W / CARD_H)   # 0.833 = buffer 400/480
-        lens.setFov(32)                         # hFOV 32° → vFOV ≈ 38°
-        lens.setNearFar(0.1, 1000)
-        cam_np.node().setCameraMask(PMASK)
+        _dr = buf.makeDisplayRegion()
+        _dr.setSort(10)
+        _dr.setCamera(cam_np)
         self._avatar_cam_np = cam_np
 
         # ── Exclude PMASK from main camera ─────────────────────────────────
@@ -408,7 +416,7 @@ class AvatarMixin:
 
         items_bg = DirectFrame(
             frameColor=_PANEL_BG,
-            frameSize=(-0.72, 0.72, -0.75, 0.68),
+            frameSize=(-0.72, 0.72, -0.82, 0.68),
             parent=parent, pos=(0.55, 0, -0.08),
         )
         DirectLabel(
@@ -421,10 +429,26 @@ class AvatarMixin:
             frameSize=(-0.64, 0.64, -0.002, 0.002),
             parent=items_bg, pos=(0, 0, 0.44),
         )
+        # ── T-Shirts / Hats filter tabs ────────────────────────────────────
+        _TAB_ON  = (0.44, 0.32, 0.64, 1.0)
+        _TAB_OFF = (0.58, 0.48, 0.76, 1.0)
+        for ti, (tab_label, tab_val) in enumerate([("T-Shirts", "tshirt"), ("Hats", "hat")]):
+            is_on = (tab_val == items_filter)
+            DirectButton(
+                text=tab_label,
+                text_fg=_TEXT_H, text_scale=0.024,
+                frameColor=_TAB_ON if is_on else _TAB_OFF,
+                frameSize=(-0.14, 0.14, -0.026, 0.026),
+                parent=items_bg,
+                pos=(-0.18 + ti * 0.38, 0, 0.385),
+                relief=1,
+                command=self._build_avatar_screen,
+                extraArgs=["items", tab_val],
+            )
         self._avatar_items_loading_lbl = DirectLabel(
             text="Loading...", text_fg=_TEXT_M, text_scale=0.030,
             frameColor=(0, 0, 0, 0),
-            parent=items_bg, pos=(0, 0, 0.20),
+            parent=items_bg, pos=(0, 0, 0.15),
         )
         self._avatar_items_bg = items_bg
         self._avatar_items_panel_colors = (_TEXT_H, _TEXT_M, _TEXT_D, _PANEL_BG, _PANEL_DIV)
@@ -432,25 +456,39 @@ class AvatarMixin:
         token = getattr(self, "_session_token", None)
         if token:
             import threading as _thr, auth_client as _ac
-            equipped_id = getattr(self, "_equipped_tshirt_id", None)
-            def _fetch(eid=equipped_id):
+            equipped_tshirt_id = getattr(self, "_equipped_tshirt_id", None)
+            equipped_hat_id    = getattr(self, "_equipped_hat_id",    None)
+            cur_filter         = items_filter
+            def _fetch(eid_t=equipped_tshirt_id, eid_h=equipped_hat_id, flt=cur_filter):
                 result, _ = _ac.get_owned_items(token)
-                owned_items = (result or {}).get("items", [])
-                # If a T-shirt is already equipped, fetch its image for the preview
+                all_owned = (result or {}).get("items", [])
+                # Filter by category
+                if flt == "hat":
+                    owned_items = [it for it in all_owned if "|HATDATA|" in (it.get("image_data") or "")]
+                else:
+                    owned_items = [it for it in all_owned if "|HATDATA|" not in (it.get("image_data") or "")]
+                # Prefetch equipped item preview data
                 preview_b64 = None
-                if eid:
+                preview_hat_data = None
+                if flt == "tshirt" and eid_t:
                     for it in owned_items:
-                        if it.get("id") == eid and it.get("image_data"):
+                        if it.get("id") == eid_t and it.get("image_data"):
                             preview_b64 = it["image_data"]
                             break
                     if not preview_b64:
-                        full, _ = _ac.get_shop_item(eid)
+                        full, _ = _ac.get_shop_item(eid_t)
                         if full:
                             preview_b64 = full.get("image_data")
-                def _populate(task, items=owned_items, b64=preview_b64):
+                elif flt == "hat" and eid_h:
+                    full, _ = _ac.get_shop_item(eid_h)
+                    if full:
+                        preview_hat_data = full.get("hat_data")
+                def _populate(task, items=owned_items, b64=preview_b64, hd=preview_hat_data):
                     self._populate_avatar_items(items)
-                    if b64:
+                    if b64 and flt == "tshirt":
                         self._preview_apply_tshirt(b64)
+                    if hd and flt == "hat":
+                        self._preview_apply_hat(hd)
                     return task.done
                 self.taskMgr.doMethodLater(0, _populate, "_populateAvatarItems", appendTask=True)
             _thr.Thread(target=_fetch, daemon=True).start()
@@ -483,61 +521,172 @@ class AvatarMixin:
             )
             return
 
-        equipped_id = getattr(self, "_equipped_tshirt_id", None)
-        ROW_H = 0.110
+        # Pre-render thumbnails. T-shirts get RTT avatar render; hats use image_data directly.
+        self._avatar_all_items = items
+        self._avatar_items_page = 0
+        cur_filter = getattr(self, '_avatar_items_filter', 'tshirt')
+        thumb_textures = {}
+        if cur_filter == "tshirt":
+            tshirt_items = [it for it in items if it.get("image_data")]
+            try:
+                thumb_textures = self._render_shop_thumbnails(tshirt_items, buf_w=256, buf_h=256)
+            except Exception:
+                thumb_textures = {}
+        else:
+            # For hats, decode image_data directly as thumbnail texture
+            import base64 as _b64
+            from panda3d.core import PNMImage, StringStream, Texture
+            for it in items:
+                iid  = it.get("id")
+                idat = it.get("image_data")
+                if iid and idat:
+                    try:
+                        raw = _b64.b64decode(idat)
+                        ss  = StringStream(raw)
+                        pnm = PNMImage()
+                        if pnm.read(ss):
+                            tex = Texture()
+                            tex.load(pnm)
+                            thumb_textures[iid] = tex
+                    except Exception:
+                        pass
+        self._avatar_thumb_textures = thumb_textures
+
+        # Grid sub-frame (replaced on each page turn)
+        self._avatar_items_grid_frame = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-0.70, 0.70, -0.55, 0.38),
+            parent=items_bg,
+        )
+
+        # Prev / Next buttons
+        self._avatar_items_prev_btn = DirectButton(
+            text="< Prev",
+            text_fg=_TEXT_H, text_scale=0.026,
+            frameColor=_PANEL_DIV,
+            frameSize=(-0.12, 0.12, -0.030, 0.030),
+            parent=items_bg, pos=(-0.22, 0, -0.72),
+            relief=1,
+            command=self._avatar_items_goto_page,
+            extraArgs=[-1],
+        )
+        self._avatar_items_next_btn = DirectButton(
+            text="Next >",
+            text_fg=_TEXT_H, text_scale=0.026,
+            frameColor=_PANEL_DIV,
+            frameSize=(-0.12, 0.12, -0.030, 0.030),
+            parent=items_bg, pos=(0.22, 0, -0.72),
+            relief=1,
+            command=self._avatar_items_goto_page,
+            extraArgs=[+1],
+        )
+        self._draw_avatar_items_page(0)
+
+    def _draw_avatar_items_page(self, page):
+        items_bg = getattr(self, '_avatar_items_bg', None)
+        if not items_bg or items_bg.isEmpty():
+            return
+        _TEXT_H, _TEXT_M, _TEXT_D, _PANEL_BG, _PANEL_DIV = self._avatar_items_panel_colors
+
+        all_items = getattr(self, '_avatar_all_items', [])
+        thumb_textures = getattr(self, '_avatar_thumb_textures', {})
+        PAGE_SIZE = 6
+        max_page = max(0, (len(all_items) - 1) // PAGE_SIZE)
+        page = max(0, min(page, max_page))
+        self._avatar_items_page = page
+
+        # Rebuild grid sub-frame
+        gf = getattr(self, '_avatar_items_grid_frame', None)
+        if gf and not gf.isEmpty():
+            gf.destroy()
+        grid_frame = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-0.70, 0.70, -0.55, 0.38),
+            parent=items_bg,
+        )
+        self._avatar_items_grid_frame = grid_frame
+
+        cur_filter  = getattr(self, '_avatar_items_filter', 'tshirt')
+        equipped_id = (getattr(self, "_equipped_hat_id", None)
+                       if cur_filter == "hat"
+                       else getattr(self, "_equipped_tshirt_id", None))
+        COLS = 3; CARD_W = 0.42; CARD_H = 0.42; NAME_H = 0.06
+        GAP_X = 0.03; GAP_Y = 0.04; TOTAL_H = CARD_H + NAME_H
+        start_x = -(COLS * CARD_W + (COLS - 1) * GAP_X) / 2 + CARD_W / 2
+        start_z = 0.10
+        _EQ_COL   = (0.38, 0.26, 0.58, 1.0)
+        _NORM_COL = (0.52, 0.44, 0.70, 1.0)
         self._avatar_item_btns = {}
 
-        for i, item in enumerate(items[:6]):
-            y = 0.34 - i * ROW_H
+        for i, item in enumerate(all_items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]):
+            col = i % COLS
+            row = i // COLS
+            cx  = start_x + col * (CARD_W + GAP_X)
+            cz  = start_z - row * (TOTAL_H + GAP_Y)
             item_id = item.get("id")
-            name = item.get("name", "")
-
-            # Swatch
-            DirectFrame(
-                frameColor=(0.48, 0.38, 0.66, 1.0),
-                frameSize=(-0.044, 0.044, -0.036, 0.036),
-                parent=items_bg, pos=(-0.60, 0, y),
-            )
-            # Name
-            DirectLabel(
-                text=(name[:16] + "...") if len(name) > 18 else name,
-                text_fg=_TEXT_H, text_scale=0.026,
-                text_align=TextNode.ALeft,
-                frameColor=(0, 0, 0, 0),
-                parent=items_bg, pos=(-0.50, 0, y + 0.006),
-            )
-            # Equip / Unequip button
-            is_equipped = (item_id == equipped_id)
-            btn_text = "Unequip" if is_equipped else "Equip"
-            btn_col  = (0.38, 0.26, 0.58, 1.0) if is_equipped else (0.58, 0.18, 0.82, 1.0)
-            btn = DirectButton(
-                text=btn_text,
-                text_fg=(1, 1, 1, 1), text_scale=0.022,
-                frameColor=btn_col,
-                frameSize=(-0.090, 0.090, -0.028, 0.028),
-                parent=items_bg, pos=(0.54, 0, y),
+            name    = item.get("name", "")
+            is_eq   = (item_id == equipped_id)
+            card = DirectButton(
+                frameColor=_EQ_COL if is_eq else _NORM_COL,
+                frameSize=(-CARD_W / 2, CARD_W / 2, -TOTAL_H / 2, TOTAL_H / 2),
+                parent=grid_frame, pos=(cx, 0, cz),
                 relief=1,
                 command=self._on_avatar_item_equip,
                 extraArgs=[item],
             )
-            self._avatar_item_btns[item_id] = btn
+            thumb = DirectFrame(
+                frameColor=(0.48, 0.38, 0.66, 1.0),
+                frameSize=(-CARD_W / 2, CARD_W / 2, -CARD_H / 2, CARD_H / 2),
+                parent=card, pos=(0, 0, NAME_H / 2),
+            )
+            rtt = thumb_textures.get(item_id)
+            if rtt:
+                thumb["frameTexture"] = rtt
+                thumb["frameColor"]   = (1, 1, 1, 1)
+            short = (name[:12] + "…") if len(name) > 13 else name
+            DirectLabel(
+                text=short, text_fg=_TEXT_H, text_scale=0.022,
+                frameColor=(0, 0, 0, 0),
+                parent=card, pos=(0, 0, -TOTAL_H / 2 + NAME_H * 0.55),
+            )
+            self._avatar_item_btns[item_id] = card
+
+        # Dim unavailable page buttons
+        prev_btn = getattr(self, '_avatar_items_prev_btn', None)
+        next_btn = getattr(self, '_avatar_items_next_btn', None)
+        _DIM = (0.40, 0.35, 0.52, 1.0)
+        if prev_btn and not prev_btn.isEmpty():
+            prev_btn['frameColor'] = _PANEL_DIV if page > 0 else _DIM
+        if next_btn and not next_btn.isEmpty():
+            next_btn['frameColor'] = _PANEL_DIV if page < max_page else _DIM
+
+    def _avatar_items_goto_page(self, delta):
+        page = getattr(self, '_avatar_items_page', 0) + delta
+        self._draw_avatar_items_page(page)
 
     def _on_avatar_item_equip(self, item):
         import threading as _thr, auth_client as _ac
-        item_id = item.get("id")
-        image_b64 = item.get("image_data", "")
+        # Hats are identified by |HATDATA| embedded in image_data — works on Render
+        is_hat = "|HATDATA|" in (item.get("image_data") or "")
+
+        if is_hat:
+            self._on_avatar_hat_equip(item, _ac, _thr)
+        else:
+            self._on_avatar_tshirt_equip(item, _ac, _thr)
+
+    def _on_avatar_tshirt_equip(self, item, _ac, _thr):
+        item_id    = item.get("id")
+        image_b64  = item.get("image_data", "")
         equipped_id = getattr(self, "_equipped_tshirt_id", None)
+        token       = getattr(self, "_session_token", None)
 
         if item_id == equipped_id:
-            # Unequip
             self._equipped_tshirt_id = None
             if hasattr(self, "remove_tshirt"):
                 self.remove_tshirt()
             self._preview_apply_tshirt(None)
-            token = getattr(self, "_session_token", None)
             if token:
                 _thr.Thread(target=lambda: _ac.equip_tshirt(token, None), daemon=True).start()
-            # Broadcast unequip via WS
             ws   = getattr(self, "_ws", None)
             loop = getattr(self, "_mp_loop", None)
             if ws and loop and not loop.is_closed():
@@ -548,14 +697,12 @@ class AvatarMixin:
                 except Exception:
                     pass
         else:
-            # Equip
             self._equipped_tshirt_id = item_id
             if image_b64:
                 if hasattr(self, "apply_tshirt"):
                     self.apply_tshirt(image_b64)
                 self._preview_apply_tshirt(image_b64)
             else:
-                # Fetch image data then apply to both in-game and preview
                 def _fetch_and_apply(iid=item_id):
                     full, _ = _ac.get_shop_item(iid)
                     if full and full.get("image_data"):
@@ -566,10 +713,8 @@ class AvatarMixin:
                             return task.done
                         self.taskMgr.doMethodLater(0, _apply, "_applyTshirtLocal", appendTask=True)
                 _thr.Thread(target=_fetch_and_apply, daemon=True).start()
-            token = getattr(self, "_session_token", None)
             if token:
                 _thr.Thread(target=lambda: _ac.equip_tshirt(token, item_id), daemon=True).start()
-            # Broadcast equip via WS
             ws   = getattr(self, "_ws", None)
             loop = getattr(self, "_mp_loop", None)
             if ws and loop and not loop.is_closed():
@@ -580,14 +725,91 @@ class AvatarMixin:
                 except Exception:
                     pass
 
-        # Refresh button labels
+        self._refresh_avatar_item_highlights()
+
+    def _on_avatar_hat_equip(self, item, _ac, _thr):
+        item_id     = item.get("id")
+        equipped_id = getattr(self, "_equipped_hat_id", None)
+        token       = getattr(self, "_session_token", None)
+
+        if item_id == equipped_id:
+            self._equipped_hat_id = None
+            if hasattr(self, "remove_hat"):
+                self.remove_hat()
+            self._preview_apply_hat(None)
+            if token:
+                _thr.Thread(target=lambda: _ac.equip_hat(token, None), daemon=True).start()
+            ws   = getattr(self, "_ws", None)
+            loop = getattr(self, "_mp_loop", None)
+            if ws and loop and not loop.is_closed():
+                import asyncio, json
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send(json.dumps({"type": "equip_hat", "item_id": None})), loop)
+                except Exception:
+                    pass
+        else:
+            self._equipped_hat_id = item_id
+            if token:
+                _thr.Thread(target=lambda: _ac.equip_hat(token, item_id), daemon=True).start()
+            ws   = getattr(self, "_ws", None)
+            loop = getattr(self, "_mp_loop", None)
+            if ws and loop and not loop.is_closed():
+                import asyncio, json
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send(json.dumps({"type": "equip_hat", "item_id": item_id})), loop)
+                except Exception:
+                    pass
+
+            # Extract hat_data from image_data — embedded at upload time, no extra fetch needed
+            import base64 as _b64, json as _json
+            img = item.get("image_data") or ""
+            hat_data_json = None
+            if "|HATDATA|" in img:
+                try:
+                    hat_data_json = _b64.b64decode(img.split("|HATDATA|", 1)[1]).decode()
+                except Exception as e:
+                    print(f"[HAT_EQUIP] decode error: {e}", flush=True)
+
+            if hat_data_json:
+                def _apply_now(task, _hd=hat_data_json):
+                    if hasattr(self, "apply_hat"):
+                        self.apply_hat(_hd)
+                    self._preview_apply_hat(_hd)
+                    return task.done
+                self.taskMgr.doMethodLater(0, _apply_now, "_applyHatLocal", appendTask=True)
+            else:
+                # Fallback: fetch full item in case hat_data wasn't in the list response
+                def _fetch_and_apply(iid=item_id):
+                    full, _ = _ac.get_shop_item(iid)
+                    if not full:
+                        return
+                    fi = full.get("image_data") or ""
+                    if "|HATDATA|" in fi:
+                        try:
+                            hd = _b64.b64decode(fi.split("|HATDATA|", 1)[1]).decode()
+                            def _apply(task, _hd=hd):
+                                if hasattr(self, "apply_hat"): self.apply_hat(_hd)
+                                self._preview_apply_hat(_hd)
+                                return task.done
+                            self.taskMgr.doMethodLater(0, _apply, "_applyHatFetch", appendTask=True)
+                        except Exception as e:
+                            print(f"[HAT_EQUIP] fetch decode: {e}", flush=True)
+                _thr.Thread(target=_fetch_and_apply, daemon=True).start()
+
+        self._refresh_avatar_item_highlights()
+
+    def _refresh_avatar_item_highlights(self):
+        cur_filter  = getattr(self, '_avatar_items_filter', 'tshirt')
+        new_equipped = (getattr(self, "_equipped_hat_id", None)
+                        if cur_filter == "hat"
+                        else getattr(self, "_equipped_tshirt_id", None))
         btns = getattr(self, "_avatar_item_btns", {})
-        new_equipped = getattr(self, "_equipped_tshirt_id", None)
-        for bid, btn in btns.items():
-            if btn and not btn.isEmpty():
+        for bid, card in btns.items():
+            if card and not card.isEmpty():
                 is_eq = (bid == new_equipped)
-                btn["text"] = "Unequip" if is_eq else "Equip"
-                btn["frameColor"] = (0.38, 0.26, 0.58, 1.0) if is_eq else (0.58, 0.18, 0.82, 1.0)
+                card["frameColor"] = (0.38, 0.26, 0.58, 1.0) if is_eq else (0.52, 0.44, 0.70, 1.0)
 
     def _preview_apply_tshirt(self, image_b64):
         """Add or replace the T-shirt card on the avatar preview rig."""
@@ -629,12 +851,74 @@ class AvatarMixin:
         except Exception as e:
             print(f"[PREVIEW_TSHIRT] {e}", flush=True)
 
+    def _preview_apply_hat(self, hat_data_json):
+        """Add or replace the hat model on the avatar preview rig."""
+        n = getattr(self, '_avatar_preview_hat_model', None)
+        if n and not n.isEmpty():
+            n.removeNode()
+        self._avatar_preview_hat_model = None
+        if not hat_data_json:
+            return
+        root  = getattr(self, '_avatar_preview_rig_root', None)
+        pmask = getattr(self, '_avatar_preview_rig_pmask', BitMask32.allOn())
+        if not root or root.isEmpty():
+            return
+        import json as _json, base64, tempfile, os as _os2, shutil
+        from panda3d.core import Filename
+        tmp_dir = None
+        try:
+            data = _json.loads(hat_data_json)
+            tmp_dir = tempfile.mkdtemp(prefix="phx_prevhat_")
+            obj_tmp = _os2.path.join(tmp_dir, "hat.obj")
+            with open(obj_tmp, 'wb') as f:
+                f.write(base64.b64decode(data["obj_b64"]))
+            mtl_b64  = data.get("mtl_b64")
+            mtl_name = data.get("mtl_name") or "hat.mtl"
+            if mtl_b64:
+                with open(_os2.path.join(tmp_dir, mtl_name), 'wb') as f:
+                    f.write(base64.b64decode(mtl_b64))
+            hat_model = self.loader.loadModel(Filename.fromOsSpecific(obj_tmp))
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir = None
+            if not hat_model:
+                return
+            hat_model.setR(-90)
+            tex_b64 = data.get("texture_b64")
+            if tex_b64:
+                raw = base64.b64decode(tex_b64)
+                tex_tmp = _os2.path.join(tempfile.gettempdir(), "phx_prevhat_tex.png")
+                with open(tex_tmp, 'wb') as f:
+                    f.write(raw)
+                tex = self.loader.loadTexture(Filename.fromOsSpecific(tex_tmp))
+                try: _os2.unlink(tex_tmp)
+                except Exception: pass
+                if tex:
+                    hat_model.setTexture(tex, 1)
+            bs = data.get("brick_scale", [2, 2, 2])
+            ms = data.get("model_scale", [1, 1, 1])
+            world_scale = [bs[i] * ms[i] for i in range(3)]
+            hat_model.reparentTo(root)
+            hat_model.setScale(*world_scale)
+            hat_model.setHpr(*data.get("model_hpr", [0, 0, -90]))
+            z_off = float(data.get("z_offset", 0.0))
+            hat_model.setPos(0, 0, 4.55 + 0.55 + z_off)
+            hat_model.setShaderOff()
+            hat_model.setTwoSided(True)
+            hat_model.show(pmask)
+            self._avatar_preview_hat_model = hat_model
+        except Exception as e:
+            print(f"[PREVIEW_HAT] {e}", flush=True)
+        finally:
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def _build_preview_rig(self, root, colors, pmask):
         """Build a completely fresh avatar rig under root — no copyTo, no inherited state."""
         self._avatar_preview_rig_root  = root
         self._avatar_preview_rig_pmask = pmask
         self._avatar_preview_tshirt_anchor = None
         self._avatar_preview_tshirt_np     = None
+        self._avatar_preview_hat_model     = None
 
         def box(parent, scale, pos, color_key):
             m = self.loader.loadModel("models/box")
@@ -712,7 +996,7 @@ class AvatarMixin:
         for attr in ('_avatar_cam_np', '_avatar_cam_pivot',
                      '_avatar_char_copy', '_avatar_preview_root',
                      '_avatar_preview_tshirt_anchor', '_avatar_preview_tshirt_np',
-                     '_avatar_preview_rig_root'):
+                     '_avatar_preview_hat_model', '_avatar_preview_rig_root'):
             node = getattr(self, attr, None)
             if node and not node.isEmpty():
                 node.removeNode()

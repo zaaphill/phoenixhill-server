@@ -1,6 +1,7 @@
 import atexit
 import datetime
 import json
+import math
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from panda3d.core import (
     Point3, TextNode, TransparencyAttrib, Filename,
     LColor, AmbientLight, DirectionalLight, CardMaker, BitMask32,
     PNMImage, StringStream, Texture,
+    Camera, PerspectiveLens,
 )
 
 import auth_client
@@ -52,20 +54,20 @@ _THUMB_TINTS = [
     (0.38, 0.64, 0.28, 1), (0.68, 0.42, 0.56, 1),
 ]
 _GRID_COLS  = 5
-_CARD_W     = 0.60
-_CARD_TH    = 0.34   # thumbnail height portion
-_CARD_INFO  = 0.16   # text area height below thumbnail
-_CARD_H     = _CARD_TH + _CARD_INFO  # 0.50
+_CARD_W     = 0.54
+_CARD_TH    = 0.30   # thumbnail height portion
+_CARD_INFO  = 0.14   # text area height below thumbnail
+_CARD_H     = _CARD_TH + _CARD_INFO  # 0.44
 _CARD_GAP_X = 0.04
 _CARD_GAP_Y = 0.04
 _PAGE_SIZE  = 15     # 5 cols × 3 rows
 
 # ── Shop screen layout constants ───────────────────────────────────────────
 _SHOP_COLS  = 6
-_SHOP_CW    = 0.52   # card full width
-_SHOP_CTH   = 0.30   # thumbnail full height
-_SHOP_CIH   = 0.18   # info area full height
-_SHOP_CH    = 0.48   # total card full height
+_SHOP_CW    = 0.44   # card full width
+_SHOP_CTH   = 0.44   # thumbnail full height (square = same as width)
+_SHOP_CIH   = 0.15   # info area full height
+_SHOP_CH    = 0.59   # total card full height
 _SHOP_GAPX  = 0.03
 _SHOP_GAPY  = 0.04
 _SHOP_PAGE  = 18     # 6 × 3
@@ -73,6 +75,30 @@ _SHOP_PAGE  = 18     # 6 × 3
 
 
 class LoginScreenMixin:
+
+    # ── Hat detection helpers ──────────────────────────────────────────────
+    # Hats embed their 3-D data inside image_data using the "|HATDATA|" separator.
+    # This works with the existing Render server — no schema changes required.
+
+    @staticmethod
+    def _item_is_hat(item):
+        return "|HATDATA|" in (item.get("image_data") or "")
+
+    @staticmethod
+    def _item_thumbnail(item):
+        img = item.get("image_data") or ""
+        return img.split("|HATDATA|")[0] if "|HATDATA|" in img else img
+
+    @staticmethod
+    def _item_hat_data_json(item):
+        img = item.get("image_data") or ""
+        if "|HATDATA|" not in img:
+            return None
+        import base64
+        try:
+            return base64.b64decode(img.split("|HATDATA|", 1)[1]).decode()
+        except Exception:
+            return None
 
     def setup_login_screen(self):
         self._session_token    = None
@@ -83,6 +109,7 @@ class LoginScreenMixin:
         self._server_proc      = None
         self._is_play_only     = False
         self._equipped_tshirt_id = None
+        self._equipped_hat_id    = None
 
         self._hide_studio_ui()
         self._show_startup_splash()
@@ -316,8 +343,9 @@ class LoginScreenMixin:
             av_res, _ = auth_client.get_avatar(token)
             server_colors = (av_res or {}).get("colors") or {}
             equipped = (av_res or {}).get("equipped_tshirt")
-            if equipped is not None:
-                self._equipped_tshirt_id = int(equipped)
+            self._equipped_tshirt_id = int(equipped) if equipped is not None else None
+            eq_hat = (av_res or {}).get("equipped_hat")
+            self._equipped_hat_id = int(eq_hat) if eq_hat is not None else None
             local = self.load_avatar_colors(username)
             if server_colors and isinstance(server_colors, dict):
                 for part in list(local.keys()):
@@ -330,6 +358,34 @@ class LoginScreenMixin:
                 auth_client.put_avatar(token, {k: list(v) for k, v in local.items()})
         except Exception as e:
             print(f"[Avatar] server sync: {e}")
+
+    def _apply_equipped_items_bg(self):
+        """Background-fetch equipped tshirt/hat data and apply them to the character."""
+        import auth_client as _ac
+        equipped_tshirt = getattr(self, '_equipped_tshirt_id', None)
+        equipped_hat    = getattr(self, '_equipped_hat_id',    None)
+
+        def worker(ts_id=equipped_tshirt, hat_id=equipped_hat):
+            if ts_id:
+                full, _ = _ac.get_shop_item(ts_id)
+                if full and full.get("image_data"):
+                    b64 = full["image_data"]
+                    def _apply_ts(task, _b64=b64):
+                        if hasattr(self, "apply_tshirt"):
+                            self.apply_tshirt(_b64)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply_ts, "_loginApplyTshirt", appendTask=True)
+            if hat_id:
+                full, _ = _ac.get_shop_item(hat_id)
+                if full and full.get("hat_data"):
+                    hd = full["hat_data"]
+                    def _apply_hat(task, _hd=hd):
+                        if hasattr(self, "apply_hat"):
+                            self.apply_hat(_hd)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply_hat, "_loginApplyHat", appendTask=True)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _verify_token_async(self, token, username):
         def worker():
@@ -351,6 +407,7 @@ class LoginScreenMixin:
         self._session_token    = token
         self._session_username = username
         self.apply_avatar_colors()
+        self._apply_equipped_items_bg()
         self._build_browse_screen()
         return task.done
 
@@ -545,6 +602,7 @@ class LoginScreenMixin:
         self._session_username = username
         self._save_token(token, username)
         self.apply_avatar_colors()
+        self._apply_equipped_items_bg()
         if self._login_ui:
             self._login_ui.destroy()
             self._login_ui = None
@@ -669,19 +727,20 @@ class LoginScreenMixin:
                               parent=nav, pos=(-1.55, 0, -0.008))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
         for i, (tab_text, tab_cmd) in enumerate([
-            ("Games",  self._build_browse_screen),
-            ("Avatar", self._build_avatar_screen),
-            ("Shop",   self._build_shop_screen),
-            ("Build",  self._build_main_menu),
+            ("Games",    self._build_browse_screen),
+            ("Avatar",   self._build_avatar_screen),
+            ("Shop",     self._build_shop_screen),
+            ("Build",    self._build_main_menu),
+            ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 3)
             DirectButton(
                 text=tab_text,
                 text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.034,
+                text_scale=0.032,
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.10, 0.10, -0.052, 0.052),
-                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.052, 0.052),
+                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
@@ -723,7 +782,6 @@ class LoginScreenMixin:
             parent=bg, pos=(1.55, 0, 0.690),
             command=self._show_upload_tshirt_dialog, relief=1,
         )
-
         # ── Build list ──────────────────────────────────────────────────────
         self._build_list_frame = DirectFrame(
             frameColor=(0, 0, 0, 0),
@@ -1100,8 +1158,9 @@ class LoginScreenMixin:
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
 
-        self._shop_owned_ids = getattr(self, "_shop_owned_ids", set())
-        self._shop_item_popup = None
+        self._shop_owned_ids    = getattr(self, "_shop_owned_ids", set())
+        self._shop_item_popup   = None
+        self._shop_cat_filter   = getattr(self, "_shop_cat_filter", "all")
 
         bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
@@ -1120,19 +1179,20 @@ class LoginScreenMixin:
                               parent=nav, pos=(-1.55, 0, -0.008))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
         for i, (tab_text, tab_cmd) in enumerate([
-            ("Games",  self._build_browse_screen),
-            ("Avatar", self._build_avatar_screen),
-            ("Shop",   self._build_shop_screen),
-            ("Build",  self._build_main_menu),
+            ("Games",    self._build_browse_screen),
+            ("Avatar",   self._build_avatar_screen),
+            ("Shop",     self._build_shop_screen),
+            ("Build",    self._build_main_menu),
+            ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 2)
             DirectButton(
                 text=tab_text,
                 text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.034,
+                text_scale=0.032,
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.10, 0.10, -0.052, 0.052),
-                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.052, 0.052),
+                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
@@ -1151,13 +1211,32 @@ class LoginScreenMixin:
             relief=1, command=self._do_logout,
         )
 
-        # ── Toolbar ────────────────────────────────────────────────────
-        _TOOL_BG = (0.62, 0.55, 0.78, 1.0)
+        # ── Toolbar with category filter ───────────────────────────────
+        _TOOL_BG   = (0.62, 0.55, 0.78, 1.0)
+        _TAB_ON    = (0.48, 0.22, 0.72, 1.0)
+        _TAB_OFF   = (0.55, 0.45, 0.76, 1.0)
         DirectFrame(
             frameColor=_TOOL_BG,
             frameSize=(-2.5, 2.5, -0.038, 0.038),
             parent=bg, pos=(0, 0, 0.802),
         )
+        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Hats", "hat")]):
+            is_on = (cat_val == self._shop_cat_filter)
+            def _make_cat_cmd(v):
+                def _cmd():
+                    self._shop_cat_filter = v
+                    self._build_shop_screen()
+                return _cmd
+            DirectButton(
+                text=cat_lbl,
+                text_fg=_RS_WHITE, text_scale=0.026,
+                frameColor=_TAB_ON if is_on else _TAB_OFF,
+                frameSize=(-0.100, 0.100, -0.028, 0.028),
+                parent=bg,
+                pos=(-0.34 + ci * 0.36, 0, 0.800),
+                relief=1,
+                command=_make_cat_cmd(cat_val),
+            )
 
         # ── Grid container with Loading label ──────────────────────────
         self._shop_grid_parent = DirectFrame(
@@ -1165,6 +1244,7 @@ class LoginScreenMixin:
             frameSize=(-2.0, 2.0, -1.80, 0.72),
             parent=bg,
         )
+
         self._shop_loading_lbl = DirectLabel(
             text="Loading...",
             text_fg=_RS_GRAY, text_scale=0.040,
@@ -1200,7 +1280,14 @@ class LoginScreenMixin:
 
     def _fetch_shop_items_thread(self):
         items_result, items_err = auth_client.list_shop_items()
-        items = (items_result or {}).get("items", [])
+        all_items = (items_result or {}).get("items", [])
+        cat = getattr(self, "_shop_cat_filter", "all")
+        if cat == "all":
+            items = all_items
+        elif cat == "hat":
+            items = [it for it in all_items if self._item_is_hat(it)]
+        else:
+            items = [it for it in all_items if not self._item_is_hat(it)]
         owned_result, _ = auth_client.get_owned_items(self._session_token)
         owned = {it["id"] for it in (owned_result or {}).get("items", [])}
         self.taskMgr.doMethodLater(
@@ -1302,20 +1389,25 @@ class LoginScreenMixin:
         buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0))
         buf.setClearColorActive(True)
 
-        cam_np = self.makeCamera(buf)
-        cam_np.reparentTo(self.render)
-        # Camera at Y=-7 from rig, same height as look target (no tilt).
-        # Explicit setAspectRatio is required — makeCamera may inherit the main window
-        # aspect instead of deriving it from the off-screen buffer.
-        # hFOV 40° at distance 7 → 5.1 units wide (covers arms at ±2).
-        # vFOV is auto-derived from BUF_W/BUF_H aspect.
-        cam_np.setPos(0, 3000 - 7, 3.5)
-        cam_np.lookAt(rig, Point3(0, 0, 3.5))
-        lens = cam_np.node().getLens()
-        lens.setAspectRatio(BUF_W / BUF_H)
-        lens.setFov(40)
-        lens.setNearFar(0.1, 10000)
-        cam_np.node().setCameraMask(PMASK)
+        _cam_dist = 12
+        _h_fov    = 32.0
+        _aspect   = BUF_W / BUF_H
+        _cam_x    = 0.0
+        _cam_z    = 3.3
+
+        _camNode = Camera("shop_thumb_cam")
+        _lens = PerspectiveLens()
+        _lens.setFov(_h_fov)
+        _lens.setAspectRatio(_aspect)
+        _lens.setNearFar(0.1, 10000)
+        _camNode.setLens(_lens)
+        _camNode.setCameraMask(PMASK)
+        cam_np = self.render.attachNewNode(_camNode)
+        cam_np.setPos(_cam_x, 3000 - _cam_dist, _cam_z)
+        cam_np.lookAt(Point3(_cam_x, 3000, _cam_z))
+        _dr = buf.makeDisplayRegion(0, 1, 0, 1)
+        _dr.setSort(10)
+        _dr.setCamera(cam_np)
 
         orig_mask = self.camNode.getCameraMask()
         self.camNode.setCameraMask(orig_mask & ~PMASK)
@@ -1349,6 +1441,7 @@ class LoginScreenMixin:
         return result
 
     def _draw_shop_grid_task(self, items, err, owned, task):
+        self._shop_items_cache = items
         self._shop_owned_ids = owned
         lbl = getattr(self, "_shop_loading_lbl", None)
         if lbl and not lbl.isEmpty():
@@ -1364,15 +1457,35 @@ class LoginScreenMixin:
                 parent=frame, pos=(0, 0, 0),
             )
             return task.done
+        thumb_textures = {}
+        # Separate hats (have |HATDATA| embedded) from tshirts
+        hat_items    = [it for it in items if self._item_is_hat(it)]
+        tshirt_items = [it for it in items if not self._item_is_hat(it) and it.get("image_data")]
         try:
-            thumb_textures = self._render_shop_thumbnails(items)
+            if tshirt_items:
+                thumb_textures.update(self._render_shop_thumbnails(tshirt_items, buf_w=256, buf_h=256))
         except Exception as e:
             print(f"[SHOP_THUMB] RTT failed: {e}", flush=True)
-            thumb_textures = {}
+        # Hat thumbnails: extract the thumbnail portion from image_data
+        import base64 as _b64
+        for it in hat_items:
+            iid  = it.get("id")
+            idat = self._item_thumbnail(it)
+            if iid and idat:
+                try:
+                    raw = _b64.b64decode(idat)
+                    ss  = StringStream(raw)
+                    pnm = PNMImage()
+                    if pnm.read(ss):
+                        tex = Texture(); tex.load(pnm)
+                        thumb_textures[iid] = tex
+                except Exception:
+                    pass
         self._draw_shop_grid(items, frame, thumb_textures)
         return task.done
 
     def _draw_shop_grid(self, items, frame, thumb_textures=None):
+        self._shop_thumb_frames = {}
         _CARD_BG  = (0.84, 0.81, 0.93, 1.0)
         _NAME_COL = _RS_WHITE
         _PRICE_COL = _RS_GREEN
@@ -1410,13 +1523,12 @@ class LoginScreenMixin:
                 parent=card, pos=(0, 0, THUMB_CY),
                 sortOrder=6,
             )
-            rtt_tex = thumb_textures.get(item.get("id"))
+            item_id = item.get("id")
+            self._shop_thumb_frames[item_id] = thumb_frame
+            rtt_tex = thumb_textures.get(item_id)
             if rtt_tex:
-                hw = _SHOP_CW / 2
-                hh = _SHOP_CTH / 2
-                thumb_frame["frameColor"] = (1, 1, 1, 1)
-                thumb_frame["image"]       = rtt_tex
-                thumb_frame["image_scale"] = (hw, 1, hh)
+                thumb_frame["frameTexture"] = rtt_tex
+                thumb_frame["frameColor"]   = (1, 1, 1, 1)
             # Item name
             name = item.get("name", "")
             DirectLabel(
@@ -1424,21 +1536,6 @@ class LoginScreenMixin:
                 text_fg=_NAME_COL, text_scale=0.022,
                 frameColor=(0, 0, 0, 0),
                 parent=card, pos=(0, 0, NAME_Z),
-                sortOrder=6,
-            )
-            # Price
-            price = item.get("price", 0)
-            if price == 0:
-                price_txt = "Free"
-                price_col = _FREE_COL
-            else:
-                price_txt = f"C {price}"
-                price_col = _PRICE_COL
-            DirectLabel(
-                text=price_txt,
-                text_fg=price_col, text_scale=0.022,
-                frameColor=(0, 0, 0, 0),
-                parent=card, pos=(0, 0, PRICE_Z),
                 sortOrder=6,
             )
 
@@ -1480,7 +1577,7 @@ class LoginScreenMixin:
         # Left half — image placeholder
         img_frame = DirectFrame(
             frameColor=_THUMB_TINTS[item_summary.get("id", 0) % len(_THUMB_TINTS)],
-            frameSize=(-0.50, 0.50, -0.42, 0.42),
+            frameSize=(-0.50, 0.50, -0.50, 0.50),
             parent=card, pos=(-0.54, 0, 0),
         )
 
@@ -1513,18 +1610,37 @@ class LoginScreenMixin:
                 frameColor=(0, 0, 0, 0),
                 parent=card, pos=(RX, 0, HH - 0.36),
             )
-        price = item_summary.get("price", 0)
-        price_str = "Free" if price == 0 else f"C {price}"
-        DirectLabel(
-            text=price_str,
-            text_fg=_RS_GREEN, text_scale=0.030,
-            text_align=TextNode.ALeft,
-            frameColor=(0, 0, 0, 0),
-            parent=card, pos=(RX, 0, -HH + 0.16),
-        )
-
         item_id = item_summary.get("id")
-        owned = item_id in getattr(self, "_shop_owned_ids", set())
+        owned   = item_id in getattr(self, "_shop_owned_ids", set())
+        is_mine = (item_summary.get("username") == getattr(self, "_session_username", None))
+
+        if is_mine:
+            def _do_delete(iid=item_id):
+                token = self._session_token
+                def worker():
+                    result, err = auth_client.delete_shop_item(token, iid)
+                    def _done(task, ok=(result is not None), err=err):
+                        if ok:
+                            popup = getattr(self, "_shop_item_popup", None)
+                            if popup:
+                                try: popup.destroy()
+                                except Exception: pass
+                            self._shop_item_popup = None
+                            self._show_toast("Item deleted.", GREEN)
+                            self._build_shop_screen()
+                        else:
+                            self._show_toast(f"Delete failed: {err}", RED)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _done, "_delShopDone", appendTask=True)
+                threading.Thread(target=worker, daemon=True).start()
+            DirectButton(
+                text="Delete",
+                text_fg=_RS_WHITE, text_scale=0.026,
+                frameColor=_RS_RED,
+                frameSize=(-0.10, 0.10, -0.032, 0.032),
+                parent=card, pos=(RX + 0.18, 0, -HH + 0.14),
+                relief=1, command=_do_delete,
+            )
 
         if owned:
             self._shop_popup_get_btn = DirectLabel(
@@ -1545,35 +1661,39 @@ class LoginScreenMixin:
                 extraArgs=[item_id],
             )
 
-        # Fetch full item then render an RTT avatar wearing the shirt
-        def _fetch_image():
-            full, _ = auth_client.get_shop_item(item_id)
-            if full and full.get("image_data"):
-                b64 = full["image_data"]
-                def _apply(task, _b64=b64, frm=img_frame, _id=item_id):
-                    if not frm or frm.isEmpty():
-                        return task.done
-                    try:
-                        # buf_h matched to frame aspect: 1.0/0.84 ≈ 1.19 → 300×252
-                        textures = self._render_shop_thumbnails(
-                            [{"id": _id, "image_data": _b64}],
-                            buf_w=300, buf_h=252,
-                        )
-                        rtt = textures.get(_id)
-                        if rtt:
-                            fs = frm["frameSize"]
-                            hw, hh = abs(fs[1]), abs(fs[3])
-                            frm["frameColor"]  = (1, 1, 1, 1)
-                            frm["image"]       = rtt
-                            frm["image_scale"] = (hw, 1, hh)
-                        else:
-                            self._apply_thumbnail_texture(frm, _b64)
-                    except Exception as e:
-                        print(f"[POPUP_THUMB] {e}", flush=True)
-                        self._apply_thumbnail_texture(frm, _b64)
-                    return task.done
-                self.taskMgr.doMethodLater(0, _apply, "_applyShopImg", appendTask=True)
-        threading.Thread(target=_fetch_image, daemon=True).start()
+        # Detect hat by |HATDATA| in image_data — works on the existing Render server
+        _popup_is_hat = self._item_is_hat(item_summary)
+        _popup_b64    = self._item_thumbnail(item_summary)  # thumbnail-only part
+
+        def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _b64=_popup_b64,
+                               frm=img_frame, _id=item_id):
+            if not frm or frm.isEmpty() or not _b64:
+                return task.done
+            try:
+                if _is_hat:
+                    from panda3d.core import PNMImage, StringStream, Texture
+                    import base64 as _b64mod
+                    raw = _b64mod.b64decode(_b64)
+                    ss  = StringStream(raw)
+                    pnm = PNMImage()
+                    if pnm.read(ss):
+                        tex = Texture()
+                        tex.load(pnm)
+                        tex.setMinfilter(Texture.FTLinear)
+                        tex.setMagfilter(Texture.FTLinear)
+                        frm["frameTexture"] = tex
+                        frm["frameColor"]   = (1, 1, 1, 1)
+                else:
+                    textures = self._render_shop_thumbnails(
+                        [{"id": _id, "image_data": _b64}], buf_w=256, buf_h=256)
+                    rtt = textures.get(_id)
+                    if rtt:
+                        frm["frameTexture"] = rtt
+                        frm["frameColor"]   = (1, 1, 1, 1)
+            except Exception as e:
+                print(f"[POPUP_THUMB] {e}", flush=True)
+            return task.done
+        self.taskMgr.doMethodLater(0, _apply_popup_thumb, "_applyShopImg", appendTask=True)
 
     def _buy_shop_item(self, item_id):
         token = self._session_token
@@ -1714,26 +1834,6 @@ class LoginScreenMixin:
             parent=desc_bg, pos=(-0.60, 0, -0.012),
         )
 
-        # Price field
-        DirectLabel(
-            text="Price (0 = free)",
-            text_fg=_RS_GRAY, text_scale=0.026,
-            text_align=TextNode.ALeft,
-            frameColor=(0, 0, 0, 0),
-            parent=card, pos=(-0.64, 0, -0.24),
-        )
-        price_bg = DirectFrame(
-            frameColor=(0.72, 0.69, 0.80, 1.0),
-            frameSize=(-0.62, 0.62, -0.036, 0.036),
-            parent=card, pos=(0, 0, -0.305),
-        )
-        price_entry = DirectEntry(
-            text_fg=_RS_WHITE, text_scale=0.028,
-            frameColor=(0, 0, 0, 0),
-            width=10, numLines=1,
-            parent=price_bg, pos=(-0.60, 0, -0.012),
-            initialText="0",
-        )
 
         # Status label
         upload_status = DirectLabel(
@@ -1755,10 +1855,7 @@ class LoginScreenMixin:
                 upload_status["text_fg"] = _RS_RED
                 return
             item_desc = desc_entry.get().strip()
-            try:
-                item_price = max(0, int(price_entry.get().strip() or "0"))
-            except ValueError:
-                item_price = 0
+            item_price = 0
             upload_status["text"] = "Encoding..."
             upload_status["text_fg"] = _RS_GRAY
 
@@ -1827,6 +1924,524 @@ class LoginScreenMixin:
             relief=1, command=_cancel,
         )
 
+    def _show_upload_hat_from_menu(self):
+        """Open a file dialog to pick an OBJ, then show the hat upload dialog."""
+        token = getattr(self, '_session_token', None)
+        if not token:
+            self._show_toast("Please log in first.", RED)
+            return
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            obj_path = filedialog.askopenfilename(
+                parent=root,
+                title="Select Hat OBJ file",
+                filetypes=[("OBJ files", "*.obj"), ("All files", "*.*")],
+            )
+            root.destroy()
+        except Exception as e:
+            print(f"[UPLOAD_HAT_MENU] browse error: {e}", flush=True)
+            return
+        if not obj_path:
+            return
+        # Load the OBJ in the editor system then open the upload dialog.
+        # If we're not in the editor (no hat_config_button / no inspector built),
+        # we call _load_hat_for_editor which also creates the inspector buttons,
+        # so we guard against that by calling _show_upload_hat_dialog directly
+        # with the path via a standalone upload popup.
+        self._show_hat_upload_standalone(obj_path, token)
+
+    def _show_hat_upload_standalone(self, obj_path, token):
+        """Upload a hat OBJ directly from the main menu without entering the editor."""
+        import os as _os2
+        existing = getattr(self, '_hat_upload_popup', None)
+        if existing:
+            try: existing.destroy()
+            except Exception: pass
+
+        _RS_CARD   = (0.84, 0.82, 0.93, 1.0)
+        _RS_ORANGE = (0.58, 0.18, 0.82, 1.0)
+        _RS_BORDER = (0.48, 0.38, 0.66, 1.0)
+        _RS_WHITE  = (0.00, 0.00, 0.00, 1.0)
+        _RS_GRAY   = (0.00, 0.00, 0.00, 1.0)
+        _RS_RED    = (0.85, 0.18, 0.18, 1.0)
+        _RS_GREEN  = (0.22, 0.75, 0.40, 1.0)
+
+        overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.82),
+            frameSize=(-3, 3, -3, 3),
+            sortOrder=500, state='normal',
+        )
+        self._hat_upload_popup = overlay
+
+        card = DirectFrame(
+            frameColor=_RS_CARD,
+            frameSize=(-0.72, 0.72, -0.50, 0.50),
+            parent=overlay, sortOrder=501,
+        )
+
+        short_path = obj_path.replace("\\", "/").split("/")[-1]
+        DirectLabel(
+            text="Upload Hat to Shop",
+            text_fg=_RS_WHITE, text_scale=0.036,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.38),
+        )
+        DirectLabel(
+            text=f"File: {short_path[:40]}",
+            text_fg=_RS_GRAY, text_scale=0.022,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, 0.28),
+        )
+
+        DirectLabel(
+            text="Name",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.66, 0, 0.17),
+        )
+        name_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.64, 0.64, -0.036, 0.036),
+            parent=card, pos=(0, 0, 0.11),
+        )
+        name_entry = DirectEntry(
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=42, numLines=1,
+            parent=name_bg, pos=(-0.62, 0, -0.012),
+        )
+
+        DirectLabel(
+            text="Description",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.66, 0, -0.02),
+        )
+        desc_bg = DirectFrame(
+            frameColor=(0.72, 0.69, 0.80, 1.0),
+            frameSize=(-0.64, 0.64, -0.036, 0.036),
+            parent=card, pos=(0, 0, -0.08),
+        )
+        desc_entry = DirectEntry(
+            text_fg=_RS_WHITE, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            width=42, numLines=1,
+            parent=desc_bg, pos=(-0.62, 0, -0.012),
+        )
+
+        # Optional texture picker
+        self._hat_menu_tex_path = None
+        tex_lbl = DirectLabel(
+            text="No texture selected (optional)",
+            text_fg=_RS_GRAY, text_scale=0.022,
+            text_align=TextNode.ALeft,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(-0.20, 0, -0.19),
+        )
+        def _browse_tex():
+            try:
+                import tkinter as _tk2
+                from tkinter import filedialog as _fd2
+                r2 = _tk2.Tk(); r2.withdraw(); r2.attributes("-topmost", True)
+                p = _fd2.askopenfilename(
+                    parent=r2, title="Select hat texture (PNG/JPG)",
+                    filetypes=[("Image files", "*.png *.jpg *.jpeg"), ("All files", "*.*")],
+                )
+                r2.destroy()
+                if p:
+                    self._hat_menu_tex_path = p
+                    tex_lbl["text"] = p.replace("\\","/").split("/")[-1][:40]
+                    tex_lbl["text_fg"] = _RS_WHITE
+            except Exception as e:
+                print(f"[HAT_MENU_TEX] {e}", flush=True)
+        DirectButton(
+            text="Texture...",
+            text_fg=_RS_WHITE, text_scale=0.022,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.10, 0.10, -0.026, 0.026),
+            parent=card, pos=(-0.55, 0, -0.19),
+            relief=1, command=_browse_tex,
+        )
+
+        status_lbl = DirectLabel(
+            text="",
+            text_fg=_RS_GREEN, text_scale=0.024,
+            frameColor=(0, 0, 0, 0),
+            parent=card, pos=(0, 0, -0.32),
+        )
+
+        def _cancel():
+            p = getattr(self, '_hat_upload_popup', None)
+            if p:
+                try: p.destroy()
+                except Exception: pass
+            self._hat_upload_popup = None
+
+        def _do_upload():
+            item_name = name_entry.get().strip()
+            if not item_name:
+                status_lbl["text"] = "Enter a name."
+                status_lbl["text_fg"] = _RS_RED
+                return
+            item_desc = desc_entry.get().strip()
+            tex_path  = self._hat_menu_tex_path
+            status_lbl["text"] = "Packaging..."
+            status_lbl["text_fg"] = _RS_GRAY
+
+            def worker():
+                import base64, tempfile, json as _json, os as _os3, re as _re
+                from panda3d.core import PNMImage, Filename as _Fn
+                try:
+                    with open(obj_path, 'rb') as fh:
+                        obj_raw = fh.read()
+                    obj_b64 = base64.b64encode(obj_raw).decode()
+
+                    mtl_b64 = None; mtl_name = None
+                    try:
+                        obj_text = obj_raw.decode('utf-8', errors='replace')
+                        m = _re.search(r'^mtllib\s+(.+)$', obj_text, _re.MULTILINE)
+                        if m:
+                            mtl_name = m.group(1).strip()
+                            mtl_path = _os3.path.join(_os3.path.dirname(obj_path), mtl_name)
+                            if _os3.path.exists(mtl_path):
+                                with open(mtl_path, 'rb') as fh:
+                                    mtl_b64 = base64.b64encode(fh.read()).decode()
+                    except Exception as _me:
+                        print(f"[HAT_MENU_MTL] {_me}", flush=True)
+
+                    tex_b64 = None
+                    if tex_path and _os3.path.exists(tex_path):
+                        img = PNMImage()
+                        img.read(_Fn.fromOsSpecific(tex_path))
+                        if img.getXSize() > 512 or img.getYSize() > 512:
+                            s = PNMImage(512, 512); s.gaussianFilterFrom(1.0, img); img = s
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                            tmp = tf.name
+                        img.write(_Fn.fromOsSpecific(tmp))
+                        with open(tmp, 'rb') as fh:
+                            tex_b64 = base64.b64encode(fh.read()).decode()
+                        _os3.unlink(tmp)
+
+                    hat_data = _json.dumps({
+                        "obj_b64": obj_b64, "mtl_b64": mtl_b64,
+                        "mtl_name": mtl_name, "texture_b64": tex_b64,
+                        "brick_scale": [2, 2, 2], "model_scale": [1, 1, 1],
+                        "model_hpr": [0, 0, -90], "z_offset": 0.0,
+                    })
+                except Exception as e:
+                    def _err(task, msg=str(e)):
+                        status_lbl["text"] = f"Pack error: {msg[:40]}"
+                        status_lbl["text_fg"] = _RS_RED
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _err, "_hatMenuPackErr", appendTask=True)
+                    return
+
+                # Thumbnail render — on main thread
+                def _thumb_and_upload(task):
+                    import tempfile, base64 as _b64
+                    from panda3d.core import (Camera, PerspectiveLens, PNMImage,
+                                              Filename as _Fn2, LColor, Point3, BitMask32)
+                    thumb_b64 = ""
+                    try:
+                        PMASK = BitMask32.bit(9)
+                        BUF_W = BUF_H = 256
+                        thumb_model = self.loader.loadModel(_Fn2.fromOsSpecific(obj_path))
+                        if thumb_model:
+                            thumb_model.setR(-90)
+                            thumb_model.reparentTo(self.render)
+                            thumb_model.setPos(0, 6000, 5)
+                            thumb_model.setShaderOff(); thumb_model.setTwoSided(True)
+                            if tex_path and tex_b64:
+                                tex2 = self.loader.loadTexture(_Fn2.fromOsSpecific(tex_path))
+                                if tex2:
+                                    thumb_model.setTexture(tex2, 1)
+                            thumb_model.show(PMASK)
+                            buf = self.win.makeTextureBuffer("hat_menu_thumb", BUF_W, BUF_H)
+                            buf.setClearColor(LColor(0.20, 0.20, 0.28, 1.0))
+                            buf.setClearColorActive(True)
+                            _cn = Camera("hat_menu_thumb_cam")
+                            _lens = PerspectiveLens(); _lens.setFov(40); _lens.setNearFar(0.1, 10000)
+                            _cn.setLens(_lens); _cn.setCameraMask(PMASK)
+                            cam_np = self.render.attachNewNode(_cn)
+                            cam_np.setPos(0, 6000 - 8, 5)
+                            cam_np.lookAt(Point3(0, 6000, 5))
+                            _dr = buf.makeDisplayRegion(); _dr.setSort(10); _dr.setCamera(cam_np)
+                            orig_mask = self.camNode.getCameraMask()
+                            self.camNode.setCameraMask(orig_mask & ~PMASK)
+                            self.graphicsEngine.renderFrame()
+                            rtex = buf.getTexture()
+                            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+                            pnm = PNMImage()
+                            if rtex.store(pnm):
+                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                                    tmp2 = tf.name
+                                pnm.write(_Fn2.fromOsSpecific(tmp2))
+                                with open(tmp2, 'rb') as fh:
+                                    thumb_b64 = _b64.b64encode(fh.read()).decode()
+                                import os as _os4; _os4.unlink(tmp2)
+                            self.graphicsEngine.removeWindow(buf)
+                            cam_np.removeNode(); thumb_model.removeNode()
+                            self.camNode.setCameraMask(orig_mask)
+                    except Exception as e:
+                        print(f"[HAT_MENU_THUMB] {e}", flush=True)
+
+                    import threading as _thr2, auth_client as _ac
+                    def _upload():
+                        result, err = _ac.upload_shop_item(
+                            token, item_name, item_desc, 0, thumb_b64,
+                            category="hat", hat_data=hat_data)
+                        def _done(task2, ok=(result is not None), err=err):
+                            if ok:
+                                status_lbl["text"] = "Published!"
+                                status_lbl["text_fg"] = _RS_GREEN
+                                self._show_toast("Hat uploaded to shop!", GREEN)
+                            else:
+                                status_lbl["text"] = f"Error: {(err or '')[:40]}"
+                                status_lbl["text_fg"] = _RS_RED
+                            return task2.done
+                        self.taskMgr.doMethodLater(0, _done, "_hatMenuUploadDone", appendTask=True)
+                    _thr2.Thread(target=_upload, daemon=True).start()
+                    return task.done
+
+                self.taskMgr.doMethodLater(0, _thumb_and_upload, "_hatMenuThumb", appendTask=True)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        DirectButton(
+            text="Upload to Shop",
+            text_fg=_RS_WHITE, text_scale=0.030,
+            frameColor=_RS_ORANGE,
+            frameSize=(-0.18, 0.18, -0.038, 0.038),
+            parent=card, pos=(-0.22, 0, -0.44),
+            relief=1, command=_do_upload,
+        )
+        DirectButton(
+            text="Cancel",
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.12, 0.12, -0.034, 0.034),
+            parent=card, pos=(0.34, 0, -0.44),
+            relief=1, command=_cancel,
+        )
+
+    # ── Settings screen ────────────────────────────────────────────────────
+
+    def _build_settings_screen(self):
+        self._cleanup_avatar_items_tab()
+        if self._main_menu_ui:
+            self._main_menu_ui.destroy()
+            self._main_menu_ui = None
+
+        _RS_BG     = (0.78, 0.75, 0.88, 1.0)
+        _RS_NAV    = (0.55, 0.45, 0.76, 1.0)
+        _RS_ORANGE = (0.58, 0.18, 0.82, 1.0)
+        _RS_WHITE  = (0.95, 0.95, 1.00, 1.0)
+        _RS_GRAY   = (0.00, 0.00, 0.00, 1.0)  # black so inactive nav tabs are readable
+        _RS_CARD   = (0.70, 0.66, 0.82, 1.0)
+        _RS_ON     = (0.28, 0.72, 0.42, 1.0)
+        _RS_OFF    = (0.52, 0.44, 0.70, 1.0)
+        _RS_BTN    = (0.52, 0.44, 0.70, 1.0)
+
+        bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
+        self._main_menu_ui = bg
+
+        # ── Nav bar ────────────────────────────────────────────────────────
+        nav = DirectFrame(
+            frameColor=_RS_NAV,
+            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            parent=bg, pos=(0, 0, 0.908),
+        )
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        if _lt:
+            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
+                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
+                              parent=nav, pos=(-1.55, 0, -0.008))
+            _lf.setTransparency(TransparencyAttrib.MAlpha)
+        for i, (tab_text, tab_cmd) in enumerate([
+            ("Games",    self._build_browse_screen),
+            ("Avatar",   self._build_avatar_screen),
+            ("Shop",     self._build_shop_screen),
+            ("Build",    self._build_main_menu),
+            ("Settings", self._build_settings_screen),
+        ]):
+            is_active = (i == 4)
+            DirectButton(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.032,
+                frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
+                frameSize=(-0.095, 0.095, -0.052, 0.052),
+                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                relief=1 if is_active else 0,
+                command=tab_cmd,
+            )
+        DirectLabel(
+            text=self._session_username or "",
+            text_fg=_RS_GRAY, text_scale=0.028,
+            frameColor=(0, 0, 0, 0),
+            parent=nav, pos=(1.20, 0, -0.014),
+        )
+        DirectButton(
+            text="Log Out",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=(0.48, 0.38, 0.66, 1.0),
+            frameSize=(-0.082, 0.082, -0.026, 0.026),
+            parent=nav, pos=(1.55, 0, -0.014),
+            relief=1, command=self._do_logout,
+        )
+
+        # ── Settings panel ─────────────────────────────────────────────────
+        _C_ON     = (0.20, 0.72, 0.38, 1.0)   # toggle ON  (green)
+        _C_OFF    = (0.52, 0.44, 0.70, 1.0)   # toggle OFF (purple)
+        _C_BTN    = (0.52, 0.44, 0.70, 1.0)   # stepper buttons
+        _C_VAL    = (0.48, 0.40, 0.64, 1.0)   # stepper value box
+        _C_TITLE  = (0.10, 0.07, 0.28, 1.0)   # panel title
+        _C_HDR    = (0.18, 0.12, 0.40, 1.0)   # section header
+        _C_LBL    = (0.18, 0.12, 0.40, 1.0)   # row labels
+        _C_VAL_T  = (0.95, 0.93, 1.00, 1.0)   # value text (light, on dark bg)
+
+        panel = DirectFrame(
+            frameColor=(0.72, 0.68, 0.84, 1.0),
+            frameSize=(-0.72, 0.72, -0.86, 0.72),
+            parent=bg, pos=(0, 0, 0.0),
+        )
+        DirectLabel(
+            text="Settings",
+            text_fg=_C_TITLE, text_scale=0.040,
+            frameColor=(0, 0, 0, 0),
+            parent=panel, pos=(0, 0, 0.60),
+        )
+
+        # Divider under title
+        DirectFrame(
+            frameColor=(0.58, 0.52, 0.74, 1.0),
+            frameSize=(-0.64, 0.64, -0.002, 0.002),
+            parent=panel, pos=(0, 0, 0.52),
+        )
+
+        row_z    = 0.42
+        row_step = 0.148
+
+        def section_hdr(label, z):
+            DirectLabel(
+                text=label,
+                text_fg=_C_HDR, text_scale=0.028,
+                text_align=TextNode.ALeft,
+                frameColor=(0, 0, 0, 0),
+                parent=panel, pos=(-0.68, 0, z),
+            )
+
+        def row_toggle(label, attr,
+                       on_col=_C_ON, off_col=_C_OFF):
+            nonlocal row_z
+            z = row_z
+            row_z -= row_step
+            DirectLabel(
+                text=label,
+                text_fg=_C_LBL, text_scale=0.026,
+                text_align=TextNode.ALeft,
+                frameColor=(0, 0, 0, 0),
+                parent=panel, pos=(-0.68, 0, z),
+            )
+            btn_ref = [None]
+            def _toggle(a=attr, br=btn_ref, oc=on_col, fc=off_col):
+                new_val = not getattr(self, a)
+                setattr(self, a, new_val)
+                self.save_settings()
+                b = br[0]
+                if b and not b.isEmpty():
+                    b['text']       = 'ON'  if new_val else 'OFF'
+                    b['frameColor'] = oc    if new_val else fc
+            btn = DirectButton(
+                text='ON' if getattr(self, attr) else 'OFF',
+                text_fg=_C_VAL_T, text_scale=0.026,
+                frameColor=on_col if getattr(self, attr) else off_col,
+                frameSize=(-0.060, 0.060, -0.024, 0.024),
+                parent=panel, pos=(0.36, 0, z),
+                relief=1, command=_toggle,
+            )
+            btn_ref[0] = btn
+
+        def row_stepper(label, attr, min_val, max_val, step,
+                        fmt='{:.0f}', apply_fn=None):
+            nonlocal row_z
+            z = row_z
+            row_z -= row_step
+            DirectLabel(
+                text=label,
+                text_fg=_C_LBL, text_scale=0.026,
+                text_align=TextNode.ALeft,
+                frameColor=(0, 0, 0, 0),
+                parent=panel, pos=(-0.68, 0, z),
+            )
+            val_ref = [None]
+            def _set(delta, a=attr, mn=min_val, mx=max_val, vr=val_ref, f=fmt, af=apply_fn):
+                new_v = max(mn, min(mx, getattr(self, a) + delta))
+                setattr(self, a, new_v)
+                if af:
+                    af(new_v)
+                self.save_settings()
+                v = vr[0]
+                if v and not v.isEmpty():
+                    v['text'] = f.format(new_v)
+            DirectButton(
+                text='–', text_fg=_C_VAL_T, text_scale=0.030,
+                frameColor=_C_BTN,
+                frameSize=(-0.030, 0.030, -0.024, 0.024),
+                parent=panel, pos=(0.20, 0, z),
+                relief=1, command=lambda s=-step: _set(s),
+            )
+            val_lbl = DirectLabel(
+                text=fmt.format(getattr(self, attr)),
+                text_fg=_C_VAL_T, text_scale=0.028,
+                frameColor=_C_VAL,
+                frameSize=(-0.058, 0.058, -0.024, 0.024),
+                parent=panel, pos=(0.30, 0, z),
+            )
+            val_ref[0] = val_lbl
+            DirectButton(
+                text='+', text_fg=_C_VAL_T, text_scale=0.030,
+                frameColor=_C_BTN,
+                frameSize=(-0.030, 0.030, -0.024, 0.024),
+                parent=panel, pos=(0.40, 0, z),
+                relief=1, command=lambda s=step: _set(s),
+            )
+
+        # ── Camera ─────────────────────────────────────────────────────────
+        section_hdr("Camera", row_z); row_z -= row_step * 0.7
+        row_toggle("Play mode — invert vertical",   '_settings_invert_play')
+        row_toggle("Editor mode — invert vertical", '_settings_invert_editor')
+
+        # ── Editor Speed ───────────────────────────────────────────────────
+        row_z -= row_step * 0.5
+        section_hdr("Editor Speed", row_z); row_z -= row_step * 0.7
+        row_stepper("Camera speed  (units/s)", '_settings_editor_speed',
+                    min_val=1, max_val=200, step=5)
+
+        # ── Field of View ──────────────────────────────────────────────────
+        row_z -= row_step * 0.5
+        section_hdr("Field of View", row_z); row_z -= row_step * 0.7
+
+        def _apply_fov(v):
+            if getattr(self, 'is_playtest', False):
+                self.camLens.setFov(v)
+
+        row_stepper("Play mode FOV", '_settings_play_fov',
+                    min_val=40, max_val=120, step=5, apply_fn=_apply_fov)
+
+        # ── Rendering ──────────────────────────────────────────────────────
+        row_z -= row_step * 0.5
+        section_hdr("Rendering", row_z); row_z -= row_step * 0.7
+        row_stepper("Render distance  (units)", '_settings_render_distance',
+                    min_val=100, max_val=1000, step=50)
+
     # ── Browse screen ──────────────────────────────────────────────────────
 
     def _build_browse_screen(self):
@@ -1855,19 +2470,20 @@ class LoginScreenMixin:
             _lf.setTransparency(TransparencyAttrib.MAlpha)
         # Tabs centred around x=0
         for i, (tab_text, tab_cmd) in enumerate([
-            ("Games",  self._build_browse_screen),
-            ("Avatar", self._build_avatar_screen),
-            ("Shop",   self._build_shop_screen),
-            ("Build",  self._build_main_menu),
+            ("Games",    self._build_browse_screen),
+            ("Avatar",   self._build_avatar_screen),
+            ("Shop",     self._build_shop_screen),
+            ("Build",    self._build_main_menu),
+            ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 0)
             DirectButton(
                 text=tab_text,
                 text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.034,
+                text_scale=0.032,
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.10, 0.10, -0.052, 0.052),
-                parent=nav, pos=((i - 1.5) * 0.26, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.052, 0.052),
+                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
@@ -2150,7 +2766,7 @@ class LoginScreenMixin:
             parent=card, pos=(TH_CX, 0, PLAY_Y),
             relief=1,
             command=self._popup_play,
-            extraArgs=[build["id"]],
+            extraArgs=[build["id"], build.get("name", ""), build.get("thumbnail") or ""],
         )
 
         # Right column — info
@@ -2240,9 +2856,9 @@ class LoginScreenMixin:
                 pass
         self._game_popup = None
 
-    def _popup_play(self, build_id):
+    def _popup_play(self, build_id, name="", thumbnail=""):
         self._close_game_info_popup()
-        self._on_play_published(build_id)
+        self._on_play_published(build_id, name, thumbnail)
 
     def _popup_play_solo(self, build_id):
         self._close_game_info_popup()
@@ -2271,29 +2887,159 @@ class LoginScreenMixin:
         self._show_studio_ui()
         for attr in ("exit_button", "insert_brick_button", "move_button",
                      "scale_button", "export_button", "import_button",
-                     "cloud_save_button"):
+                     "cloud_save_button", "hat_config_button"):
             btn = getattr(self, attr, None)
             if btn:
                 btn.hide()
         self.is_playtest = True
+        self._apply_hat_mode()
         self._panel.hide()
         self.character.show()
         try:
             self._load_bricks_from_data(json.loads(data_str))
         except Exception as e:
             print("Solo load error:", e)
+        self.character.setPos(0, 0, 50)
         self.spawn_unstuck()
         self.cam_distance = 20
         self.cam_angle.set(0, 20)
-        self.camLens.setFov(60)
+        self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
         self.updateCamera()
         self._entering_play_mode = False
+        # Restore equipped T-shirt and hat for solo play
+        ts_id = getattr(self, "_equipped_tshirt_id", None)
+        if ts_id and hasattr(self, "apply_tshirt"):
+            def _solo_ts(eid=ts_id):
+                item, _ = auth_client.get_shop_item(eid)
+                if item and item.get("image_data"):
+                    b64 = item["image_data"]
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _b=b64: (self.apply_tshirt(_b), task.done)[1],
+                        "_soloRestoreTs", appendTask=True)
+            threading.Thread(target=_solo_ts, daemon=True).start()
+        ht_id = getattr(self, "_equipped_hat_id", None)
+        if ht_id and hasattr(self, "apply_hat"):
+            def _solo_hat(hid=ht_id):
+                item, _ = auth_client.get_shop_item(hid)
+                if item and item.get("hat_data"):
+                    hd = item["hat_data"]
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _h=hd: (self.apply_hat(_h), task.done)[1],
+                        "_soloRestoreHat", appendTask=True)
+            threading.Thread(target=_solo_hat, daemon=True).start()
         return task.done
 
-    def _on_play_published(self, build_id):
+    def _show_loading_screen(self, name="", thumbnail=""):
+        self._hide_loading_screen()
+        overlay = DirectFrame(
+            frameColor=(0.05, 0.04, 0.10, 0.96),
+            frameSize=(-2, 2, -2, 2),
+            sortOrder=200,
+        )
+        self._loading_overlay = overlay
+        CARD_W = 0.82
+        TH_W   = CARD_W - 0.06
+        TH_H   = TH_W * 9 / 16
+        CARD_H = TH_H + 0.18
+        card = DirectFrame(
+            frameColor=(0.12, 0.10, 0.18, 1.0),
+            frameSize=(-CARD_W/2, CARD_W/2, -CARD_H/2, CARD_H/2),
+            parent=overlay,
+            pos=(0, 0, 0.04),
+        )
+        thumb = DirectFrame(
+            frameColor=(0.20, 0.18, 0.28, 1.0),
+            frameSize=(-TH_W/2, TH_W/2, -TH_H/2, TH_H/2),
+            parent=card,
+            pos=(0, 0, CARD_H/2 - TH_H/2 - 0.03),
+        )
+        if thumbnail:
+            try:
+                import base64 as _b64
+                _raw = _b64.b64decode(thumbnail)
+                _ss  = StringStream(_raw)
+                _pnm = PNMImage()
+                if _pnm.read(_ss):
+                    _tex = Texture()
+                    _tex.load(_pnm)
+                    _tex.setMinfilter(Texture.FTLinear)
+                    _tex.setMagfilter(Texture.FTLinear)
+                    # Attach directly to aspect2d at sort=201 (above overlay at 200)
+                    # so it's never affected by the overlay's render state.
+                    _tp = thumb.getPos(base.aspect2d)
+                    _cm = CardMaker("loading_thumb")
+                    _cm.setFrame(-TH_W / 2, TH_W / 2, -TH_H / 2, TH_H / 2)
+                    _cnp = base.aspect2d.attachNewNode(_cm.generate(), 201)
+                    _cnp.setTexture(_tex, 1)
+                    _cnp.setTransparency(TransparencyAttrib.MAlpha)
+                    _cnp.setPos(_tp.x, 0, _tp.z)
+                    self._loading_thumb_np = _cnp
+                else:
+                    print("[THUMB] loading screen: PNMImage.read failed", flush=True)
+            except Exception as _e:
+                print(f"[THUMB] loading screen error: {_e}", flush=True)
+        disp_name = ((name[:30] + "…") if len(name) > 32 else name) if name else ""
+        if disp_name:
+            DirectLabel(
+                text=disp_name,
+                text_fg=(0.95, 0.92, 1.00, 1.0),
+                text_scale=0.038,
+                frameColor=(0, 0, 0, 0),
+                parent=card,
+                pos=(0, 0, -CARD_H/2 + 0.12),
+            )
+        self._loading_label = DirectLabel(
+            text="Loading",
+            text_fg=(0.60, 0.50, 0.80, 1.0),
+            text_scale=0.030,
+            frameColor=(0, 0, 0, 0),
+            parent=card,
+            pos=(0, 0, -CARD_H/2 + 0.055),
+        )
+        self._loading_dot_t = 0.0
+
+        def _anim(task):
+            lbl = getattr(self, '_loading_label', None)
+            if lbl is None:
+                return task.done
+            try:
+                self._loading_dot_t += globalClock.getDt()
+                if self._loading_dot_t >= 0.35:
+                    self._loading_dot_t -= 0.35
+                    dots = "." * (int(task.time / 0.35) % 4)
+                    lbl["text"] = f"Loading{dots}"
+            except Exception:
+                return task.done
+            return task.cont
+
+        self.taskMgr.add(_anim, "_loadingAnimTask")
+
+    def _hide_loading_screen(self):
+        try:
+            self.taskMgr.remove("_loadingAnimTask")
+        except Exception:
+            pass
+        self._loading_label = None
+        tnp = getattr(self, '_loading_thumb_np', None)
+        if tnp:
+            try:
+                tnp.removeNode()
+            except Exception:
+                pass
+        self._loading_thumb_np = None
+        overlay = getattr(self, '_loading_overlay', None)
+        if overlay:
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+        self._loading_overlay = None
+
+    def _on_play_published(self, build_id, name="", thumbnail=""):
         if getattr(self, "_entering_play_mode", False):
             return
         self._entering_play_mode = True
+        self._show_loading_screen(name, thumbnail)
         def worker():
             result, err = auth_client.get_published_build(build_id)
             if result and result.get("ok"):
@@ -2305,9 +3051,14 @@ class LoginScreenMixin:
             else:
                 print("Failed to load published build:", err)
                 self._entering_play_mode = False
+                self.taskMgr.doMethodLater(
+                    0, lambda t: (self._hide_loading_screen(), None)[1] or t.done,
+                    "_hideLoadFail", appendTask=True,
+                )
         threading.Thread(target=worker, daemon=True).start()
 
     def _do_enter_play_mode(self, build_id, name, data_str, task):
+        self._hide_loading_screen()
         self._enter_play_mode(build_id, name, data_str)
         return task.done
 
@@ -2324,14 +3075,14 @@ class LoginScreenMixin:
         # Hide all editor controls — only the Menu button stays
         for attr in ("exit_button", "insert_brick_button", "move_button",
                      "scale_button", "export_button", "import_button",
-                     "cloud_save_button"):
+                     "cloud_save_button", "hat_config_button"):
             btn = getattr(self, attr, None)
             if btn:
                 btn.hide()
 
         self.is_playtest = True
+        self._apply_hat_mode()
         self._panel.hide()
-        self.character.show()
         # Restore equipped T-shirt (fetched from server during login sync)
         equipped_id = getattr(self, "_equipped_tshirt_id", None)
         if equipped_id and hasattr(self, "apply_tshirt"):
@@ -2344,15 +3095,32 @@ class LoginScreenMixin:
                         "_restoreEquippedTshirt", appendTask=True,
                     )
             threading.Thread(target=_load_tshirt, daemon=True).start()
+        # Restore equipped hat
+        hat_id = getattr(self, "_equipped_hat_id", None)
+        if hat_id and hasattr(self, "apply_hat"):
+            def _load_hat(hid=hat_id):
+                item, _ = auth_client.get_shop_item(hid)
+                if item and item.get("hat_data"):
+                    hd = item["hat_data"]
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _h=hd: (self.apply_hat(_h), task.done)[1],
+                        "_restoreEquippedHat", appendTask=True,
+                    )
+            threading.Thread(target=_load_hat, daemon=True).start()
         try:
             self._load_bricks_from_data(json.loads(data_str))
         except Exception as e:
             print("Play-mode load error:", e)
+        self.character.setPos(0, 0, 50)
         self.spawn_unstuck()
+        # Show character only after it's been placed at the correct spawn position
+        self.character.show()
         self.cam_distance = 20
         self.cam_angle.set(0, 20)
-        self.camLens.setFov(60)
+        self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
         self.updateCamera()
+        self._entering_play_mode = False
+        self._apply_hat_mode()
         self.start_multiplayer(build_id, self._session_token)
 
     # ── Return to menu ─────────────────────────────────────────────────────
@@ -2375,6 +3143,7 @@ class LoginScreenMixin:
         self._remote_players = {}
         self.character.hide()
         self.is_playtest   = False
+        self._apply_hat_mode()
         self._clear_all_bricks()
         self._is_play_only = False
         dlg = getattr(self, "_save_dialog", None)
@@ -2397,6 +3166,7 @@ class LoginScreenMixin:
         self.create_baseplate()
         self._show_studio_ui()
         self.is_playtest = False
+        self._apply_hat_mode()
         if hasattr(self, "exit_button"):
             self.exit_button["text"] = "Play"
         if hasattr(self, "_panel"):
@@ -2406,14 +3176,24 @@ class LoginScreenMixin:
             btn = getattr(self, attr, None)
             if btn:
                 btn.show()
+        if getattr(self, '_session_token', None):
+            btn = getattr(self, 'hat_config_button', None)
+            if btn:
+                btn.show()
         self.camera.setPos(0, -30, 18)
         self.camera.lookAt(Point3(0, 0, 1))
-        self.camLens.setFov(80)
+        self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
 
     def _do_logout(self):
         token = self._session_token
         self._session_token    = None
         self._session_username = None
+        self._equipped_tshirt_id = None
+        self._equipped_hat_id    = None
+        if hasattr(self, 'remove_tshirt'):
+            self.remove_tshirt()
+        if hasattr(self, 'remove_hat'):
+            self.remove_hat()
         self._delete_saved_token()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()

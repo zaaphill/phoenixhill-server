@@ -1,4 +1,5 @@
 import os as _os
+import random
 from panda3d.core import (
     NodePath, Vec3,
     GeomVertexFormat, GeomVertexData, Geom,
@@ -149,7 +150,7 @@ class CharacterMixin:
             self.vertical_speed = self.jump_speed
 
     def updateMovement(self, task):
-        dt = globalClock.getDt()
+        dt = min(globalClock.getDt(), 1 / 20.0)
 
         face_spr = getattr(self, '_face_sprite', None)
         if face_spr and getattr(self, '_face_textures', []):
@@ -166,10 +167,16 @@ class CharacterMixin:
 
         current_pos = self.character.getPos()
 
-        if current_pos.z < -80:
-            self.character.setPos(0, 0, self.floor_top)
+        if current_pos.z < getattr(self, '_void_limit', -80):
             self.vertical_speed = 0
             self.is_jumping = False
+            spawn_pts = list(getattr(self, 'brick_spawn_points', set()))
+            if spawn_pts:
+                sp = random.choice(spawn_pts)
+                p = sp.getPos(); s = sp.getScale()
+                self.character.setPos(p.x + s.x / 2, p.y + s.y / 2, p.z + s.z)
+            else:
+                self.character.setPos(0, 0, self.floor_top)
             return Task.cont
 
         move_x = move_y = 0
@@ -219,11 +226,13 @@ class CharacterMixin:
 
         current_pos = self.character.getPos()
         ground_height = self.get_ground_height_at_position(current_pos)
+        if ground_height is None:
+            ground_height = current_pos.z - 9999.0  # freefall — no surface below
 
         MAX_STEP = 1.2
         if not self.is_jumping and self.vertical_speed <= 0:
             char_box = self.get_character_collision_box(current_pos)
-            for brick in self.bricks:
+            for brick in self._grid_nearby(current_pos, 15):
                 brick_box = self.get_brick_collision_box(brick)
                 brick_top = brick_box['max_z']
                 if (char_box['min_z'] + 0.05 < brick_top <= char_box['min_z'] + MAX_STEP and
@@ -239,6 +248,8 @@ class CharacterMixin:
         else:
             if current_pos.z > ground_height or self.vertical_speed > 0:
                 self.vertical_speed += self.gravity * dt
+                if self.vertical_speed < -300.0:
+                    self.vertical_speed = -300.0
 
             new_z = current_pos.z + self.vertical_speed * dt
 
@@ -253,31 +264,63 @@ class CharacterMixin:
                 self.vertical_speed = 0
                 self.is_jumping = False
 
+        # Jump input read BEFORE setZ so _unstuck_character knows not to cancel it
+        jump_initiated = False
         if not self.is_jumping and self.keys.get("space"):
             self.is_jumping = True
             self.vertical_speed = self.jump_speed
+            jump_initiated = True
 
         self.character.setZ(new_z)
-        self._unstuck_character()
+        self._unstuck_character(allow_jump_cancel=not jump_initiated)
         return Task.cont
 
     def spawn_unstuck(self):
-        """Called once when entering playtest. If the character overlaps any
-        brick, teleport them on top of the highest overlapping brick's surface."""
+        """Place character on a spawn point (random if multiple), or fall back
+        to centroid-above-build if no spawn points exist."""
+        live_bricks = [b for b in self.bricks if not b.isEmpty()]
+        if live_bricks:
+            min_brick_z = min(b.getPos().z for b in live_bricks)
+            self._void_limit = min(min_brick_z - 50, -80)
+        else:
+            self._void_limit = -80
+
+        self.vertical_speed = 0
+        self.is_jumping = False
+
+        spawn_pts = [sp for sp in list(getattr(self, 'brick_spawn_points', set()))
+                     if not sp.isEmpty()]
+        if spawn_pts:
+            sp = random.choice(spawn_pts)
+            p  = sp.getPos()
+            s  = sp.getScale()
+            self.character.setPos(p.x + s.x / 2, p.y + s.y / 2, p.z + s.z)
+            return
+
+        if not live_bricks:
+            return
+
+        # Fallback: find the highest brick overlapping the character's current XY footprint
         pos      = self.character.getPos()
         char_box = self.get_character_collision_box(pos)
         highest_top = None
-        for brick in self.bricks:
+        for brick in live_bricks:
             brick_box = self.get_brick_collision_box(brick)
             if self.boxes_collide(char_box, brick_box):
                 if highest_top is None or brick_box['max_z'] > highest_top:
                     highest_top = brick_box['max_z']
-        if highest_top is not None:
-            self.character.setZ(highest_top)
-            self.vertical_speed = 0
-            self.is_jumping = False
 
-    def _unstuck_character(self):
+        if highest_top is None:
+            # No overlap at current XY — place above the build centroid
+            boxes = [self.get_brick_collision_box(b) for b in live_bricks]
+            avg_x = sum(bx['center'].x for bx in boxes) / len(boxes)
+            avg_y = sum(bx['center'].y for bx in boxes) / len(boxes)
+            top_z = max(bx['max_z'] for bx in boxes)
+            self.character.setPos(avg_x, avg_y, top_z + 2)
+        else:
+            self.character.setZ(highest_top)
+
+    def _unstuck_character(self, allow_jump_cancel=True):
         """If the character overlaps any brick, push them out along the
         minimum-penetration axis. Runs up to 4 iterations per frame so
         overlapping multiple bricks at once is still resolved."""
@@ -288,7 +331,7 @@ class CharacterMixin:
             best_push      = None
             best_push_dist = float('inf')
 
-            for brick in self.bricks:
+            for brick in self._grid_nearby(pos, 12):
                 brick_box = self.get_brick_collision_box(brick)
                 if not self.boxes_collide(char_box, brick_box):
                     continue
@@ -319,8 +362,11 @@ class CharacterMixin:
 
             self.character.setPos(pos + best_push)
             if best_push.z > 0:
-                self.vertical_speed = 0
-                self.is_jumping = False
+                # Ignore microscopic float-noise pushes — they fire when the character
+                # is sitting exactly on a surface and would cancel a just-initiated jump.
+                if allow_jump_cancel and best_push.z > 0.05:
+                    self.vertical_speed = 0
+                    self.is_jumping = False
             elif best_push.z < 0 and self.vertical_speed > 0:
                 self.vertical_speed = 0
 
@@ -361,3 +407,92 @@ class CharacterMixin:
             if n and not n.isEmpty():
                 n.removeNode()
             setattr(self, attr, None)
+
+    def apply_hat(self, hat_data_json):
+        """Load a hat from server hat_data JSON and attach it (follows head each frame)."""
+        self.remove_hat()
+        import json as _json, base64, tempfile, os as _os, shutil
+        try:
+            data = _json.loads(hat_data_json)
+        except Exception as e:
+            print(f"[HAT_APPLY] JSON parse: {e}", flush=True)
+            return
+        tmp_dir = None
+        try:
+            from panda3d.core import Filename
+            # Write OBJ + MTL into the same temp directory so Panda3D can
+            # resolve the mtllib reference correctly when loading the model.
+            tmp_dir = tempfile.mkdtemp(prefix="phx_hat_")
+            obj_tmp = _os.path.join(tmp_dir, "hat.obj")
+            with open(obj_tmp, 'wb') as f:
+                f.write(base64.b64decode(data["obj_b64"]))
+
+            mtl_b64  = data.get("mtl_b64")
+            mtl_name = data.get("mtl_name") or "hat.mtl"
+            if mtl_b64:
+                with open(_os.path.join(tmp_dir, mtl_name), 'wb') as f:
+                    f.write(base64.b64decode(mtl_b64))
+
+            hat_model = self.loader.loadModel(Filename.fromOsSpecific(obj_tmp))
+            # Safe to remove temp files now — model data is in memory
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir = None
+
+            if not hat_model:
+                print("[HAT_APPLY] loader returned None", flush=True)
+                return
+
+            hat_model.setR(-90)  # OBJ Y-up → Panda3D Z-up
+
+            # User-applied texture overrides any MTL texture
+            tex_b64 = data.get("texture_b64")
+            if tex_b64:
+                raw = base64.b64decode(tex_b64)
+                tex_tmp = _os.path.join(tempfile.gettempdir(), "phx_hat_tex.png")
+                with open(tex_tmp, 'wb') as f:
+                    f.write(raw)
+                tex = self.loader.loadTexture(Filename.fromOsSpecific(tex_tmp))
+                try: _os.unlink(tex_tmp)
+                except Exception: pass
+                if tex:
+                    hat_model.setTexture(tex, 1)
+
+            bs = data.get("brick_scale", [2, 2, 2])
+            ms = data.get("model_scale", [1, 1, 1])
+            world_scale = [bs[i] * ms[i] for i in range(3)]
+            hat_model.reparentTo(self.render)
+            hat_model.setScale(*world_scale)
+            hat_model.setHpr(*data.get("model_hpr", [0, 0, -90]))
+            hat_model.setShaderOff()
+            hat_model.setTwoSided(True)
+            self._equipped_hat_model = hat_model
+            self._equipped_hat_z_off = float(data.get("z_offset", 0.0))
+            self._equipped_hat_hpr   = data.get("model_hpr", [0, 0, -90])
+            from direct.task import Task
+            self.taskMgr.add(self._equipped_hat_follow, "_equippedHatFollowTask")
+            print("[HAT_APPLY] loaded OK", flush=True)
+        except Exception as e:
+            print(f"[HAT_APPLY] error: {e}", flush=True)
+            import traceback; traceback.print_exc()
+        finally:
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def remove_hat(self):
+        self.taskMgr.remove("_equippedHatFollowTask")
+        n = getattr(self, '_equipped_hat_model', None)
+        if n and not n.isEmpty():
+            n.removeNode()
+        self._equipped_hat_model = None
+
+    def _equipped_hat_follow(self, task):
+        from direct.task import Task
+        m = getattr(self, '_equipped_hat_model', None)
+        if not m or m.isEmpty():
+            return Task.done
+        hp = self.head.getPos(self.render)
+        z  = getattr(self, '_equipped_hat_z_off', 0.0)
+        m.setPos(hp.x, hp.y, hp.z + 0.55 + z)
+        h0, p0, r0 = getattr(self, '_equipped_hat_hpr', [0, 0, -90])
+        m.setHpr(self.character.getH() + h0, p0, r0)
+        return Task.cont
