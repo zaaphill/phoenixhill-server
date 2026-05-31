@@ -837,18 +837,18 @@ class MultiplayerMixin:
         try:
             import base64 as _b64
             from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
-            from character import Character
+            from character import CharacterMixin
             raw = _b64.b64decode(image_b64)
             ss = StringStream(raw); pnm = PNMImage()
             if not pnm.read(ss):
                 return
             tex = Texture(); tex.load(pnm)
             tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
-            R = Character._SHIRT_REGIONS
+            R = CharacterMixin._SHIRT_REGIONS
             root = d["root"]
 
             def attach(parent, reg_map, w, dp, h, pos):
-                node = Character._make_shirt_box_geom(w, dp, h, reg_map)
+                node = CharacterMixin._make_shirt_box_geom(w, dp, h, reg_map)
                 np = parent.attachNewNode(node)
                 np.setPos(*pos)
                 np.setTexture(tex)
@@ -911,22 +911,22 @@ class MultiplayerMixin:
         try:
             import base64 as _b64
             from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
-            from character import Character
+            from character import CharacterMixin
             raw = _b64.b64decode(image_b64)
             ss = StringStream(raw); pnm = PNMImage()
             if not pnm.read(ss):
                 return
             tex = Texture(); tex.load(pnm)
             tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
-            R  = Character._PANTS_REGIONS
-            TW = Character._PANTS_TEMPLATE_W
-            TH = Character._PANTS_TEMPLATE_H
+            R  = CharacterMixin._PANTS_REGIONS
+            TW = CharacterMixin._PANTS_TEMPLATE_W
+            TH = CharacterMixin._PANTS_TEMPLATE_H
             root   = d["root"]
             ll_piv = d["ll_piv"]
             rl_piv = d["rl_piv"]
 
             def attach(parent, reg_map, w, dp, h, pos):
-                node = Character._make_shirt_box_geom(w, dp, h, reg_map,
+                node = CharacterMixin._make_shirt_box_geom(w, dp, h, reg_map,
                     template_w=TW, template_h=TH)
                 np = parent.attachNewNode(node)
                 np.setPos(*pos); np.setTexture(tex)
