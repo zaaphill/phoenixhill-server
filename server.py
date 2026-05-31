@@ -125,6 +125,10 @@ def _init_db():
     except Exception:
         pass
     try:
+        c.execute("ALTER TABLE users ADD COLUMN equipped_shirt INTEGER DEFAULT NULL")
+    except Exception:
+        pass
+    try:
         c.execute("ALTER TABLE shop_items ADD COLUMN category TEXT DEFAULT 'tshirt'")
     except Exception:
         pass
@@ -169,6 +173,9 @@ class EquipTshirtBody(BaseModel):
     item_id: Optional[int] = None
 
 class EquipHatBody(BaseModel):
+    item_id: Optional[int] = None
+
+class EquipShirtBody(BaseModel):
     item_id: Optional[int] = None
 
 
@@ -368,13 +375,14 @@ def browse_published():
 def get_avatar(token: str):
     sess = _get_session(token)
     c = _db()
-    row = c.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+    row = c.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat, equipped_shirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
     c.close()
     equipped_tshirt = int(row["equipped_tshirt"]) if row and row["equipped_tshirt"] else None
     equipped_hat    = int(row["equipped_hat"])    if row and row["equipped_hat"]    else None
+    equipped_shirt  = int(row["equipped_shirt"])  if row and row["equipped_shirt"]  else None
     if not row or not row["avatar_colors"]:
-        return {"colors": {}, "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat}
-    return {"colors": json.loads(row["avatar_colors"]), "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat}
+        return {"colors": {}, "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat, "equipped_shirt": equipped_shirt}
+    return {"colors": json.loads(row["avatar_colors"]), "equipped_tshirt": equipped_tshirt, "equipped_hat": equipped_hat, "equipped_shirt": equipped_shirt}
 
 
 @app.put("/api/avatar")
@@ -598,6 +606,15 @@ def equip_hat_endpoint(token: str, b: EquipHatBody):
     c.close()
     return {"ok": True}
 
+@app.put("/api/avatar/equipped_shirt")
+def equip_shirt_endpoint(token: str, b: EquipShirtBody):
+    sess = _get_session(token)
+    c = _db()
+    c.execute("UPDATE users SET equipped_shirt=? WHERE id=?", (b.item_id, sess["user_id"]))
+    c.commit()
+    c.close()
+    return {"ok": True}
+
 
 # ── Multiplayer WebSocket ─────────────────────────────────────────────────────
 
@@ -639,14 +656,16 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
     # Load colors from DB — guaranteed up-to-date (pushed on every color pick + on login).
     try:
         uc = _db()
-        urow = uc.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+        urow = uc.execute("SELECT avatar_colors, equipped_tshirt, equipped_hat, equipped_shirt FROM users WHERE id=?", (sess["user_id"],)).fetchone()
         uc.close()
         player_colors   = json.loads(urow["avatar_colors"]) if urow and urow["avatar_colors"] else {}
         equipped_tshirt = int(urow["equipped_tshirt"]) if urow and urow["equipped_tshirt"] else None
         equipped_hat    = int(urow["equipped_hat"])    if urow and urow["equipped_hat"]    else None
+        equipped_shirt  = int(urow["equipped_shirt"])  if urow and urow["equipped_shirt"]  else None
     except Exception:
         player_colors = {}
         equipped_tshirt = None
+        equipped_shirt  = None
     print(f"[WS_CONNECT_PARSED] username={username} colors={'yes' if player_colors else 'none'}", flush=True)
 
     # Evict stale same-username connections.
@@ -684,6 +703,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                 "colors":    d.get("colors") or {},
                 "tshirt_id": d.get("tshirt_id"),
                 "hat_id":    d.get("hat_id"),
+                "shirt_id":  d.get("shirt_id"),
             }
             for pid, d in _rooms.get(build_id, {}).items()
         }
@@ -707,6 +727,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
         "colors": player_colors,
         "tshirt_id": equipped_tshirt,
         "hat_id": equipped_hat,
+        "shirt_id": equipped_shirt,
     }
     _entry_log = {k: v for k, v in _rooms[build_id][player_id].items() if k != "websocket"}
     print(f"[ROOM_STORE] {username}: {_entry_log}", flush=True)
@@ -716,6 +737,7 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
             "colors": player_colors,
             "tshirt_id": equipped_tshirt,
             "hat_id": equipped_hat,
+            "shirt_id": equipped_shirt,
         }, exclude=player_id)
         print(f"[WS] {username}: joined broadcast done", flush=True)
     except Exception as _e:
