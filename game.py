@@ -12,7 +12,7 @@ import time
 
 loadPrcFileData("", "win-size 1280 720")
 loadPrcFileData("", "win-origin -2 -2")
-loadPrcFileData("", "window-title PhoenixHill")
+loadPrcFileData("", "window-title PiePlex")
 
 def _set_png_cursor(win, png_name, hotspot_x=0, hotspot_y=0):
     """Scale a PNG to the system cursor size, wrap it in a .cur container
@@ -44,13 +44,10 @@ def _set_png_cursor(win, png_name, hotspot_x=0, hotspot_y=0):
     tmp_path = os.path.join(tmp_dir, '_phx_cursor.png')
     cur_path = os.path.join(tmp_dir, png_name.rsplit('.', 1)[0] + '.cur')
 
+    # Keep the scaled PNG on disk — camera.py uses it for the fake cursor overlay.
     img.write(Fn.fromOsSpecific(tmp_path))
     with open(tmp_path, 'rb') as fh:
         png_data = fh.read()
-    try:
-        os.remove(tmp_path)
-    except Exception:
-        pass
 
     w = struct.unpack('>I', png_data[16:20])[0]
     h = struct.unpack('>I', png_data[20:24])[0]
@@ -65,6 +62,7 @@ def _set_png_cursor(win, png_name, hotspot_x=0, hotspot_y=0):
     props = WindowProperties()
     props.setCursorFilename(Fn.fromOsSpecific(cur_path))
     win.requestProperties(props)
+    return cur_path, tmp_path, target
 
 
 from character import CharacterMixin
@@ -78,15 +76,27 @@ from sky import SkyMixin
 from login_screen import LoginScreenMixin
 from cloud import CloudMixin
 from multiplayer import MultiplayerMixin
+from avatar import AvatarMixin
 
 
-class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, CameraMixin, ShadowMixin, UIDebugMixin, SkyMixin, LoginScreenMixin, CloudMixin, MultiplayerMixin):
+class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, CameraMixin, ShadowMixin, UIDebugMixin, SkyMixin, LoginScreenMixin, CloudMixin, MultiplayerMixin, AvatarMixin):
     def __init__(self):
         ShowBase.__init__(self)
 
         self.setBackgroundColor(0.49, 0.72, 0.83, 1)
 
-        _set_png_cursor(self.win, 'arrow_nw.png', hotspot_x=0, hotspot_y=0)
+        _icon_path = os.path.join(os.getcwd(), 'PiePlex logo.ico')
+        if os.path.exists(_icon_path):
+            _wp = WindowProperties()
+            _wp.setIconFilename(Filename.fromOsSpecific(_icon_path))
+            self.win.requestProperties(_wp)
+
+        result = _set_png_cursor(self.win, 'arrow_nw.png', hotspot_x=0, hotspot_y=0)
+        if result:
+            self._cursor_path, self._cursor_scaled_png, self._cursor_size_px = result
+        else:
+            self._cursor_path = self._cursor_scaled_png = None
+            self._cursor_size_px = 32
 
         self.setup_sky()
 
@@ -118,9 +128,10 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
         self.accept("wheel_up",   self._on_wheel, [1])
         self.accept("wheel_down", self._on_wheel, [-1])
-        self.min_cam_distance = 5
+        self.min_cam_distance = 2
         self.max_cam_distance = 40
         self.zoom_step = 2
+        self.is_first_person = False
 
         # Movement
         self.keys = {"w": False, "a": False, "s": False, "d": False, "q": False, "e": False, "space": False}
@@ -139,6 +150,13 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         self.shift_lock = False
         self.accept("lshift", self.toggle_shift_lock)
 
+        # Settings
+        self._settings_invert_play      = False
+        self._settings_invert_editor    = False
+        self._settings_editor_speed     = 15
+        self._settings_play_fov         = 80
+        self._load_settings()
+
         # Tasks — movement runs first so camera has the updated position this frame
         self.taskMgr.add(self.updateMovement,       "updateMovementTask")
         self.taskMgr.add(self.updateCameraTask,     "updateCameraTask")
@@ -156,18 +174,23 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         # Brick state
         self.bricks = []
         self.brick_collision_nodes = {}
-        self.selected_brick = None
+        self.selected_brick  = None   # primary selection (last clicked)
+        self.selected_bricks = []     # all currently selected bricks
+        self._copy_clipboard = []     # brick data dicts from last Ctrl+C
+        self._undo_stack     = []     # list of callables, each reverts one action
         self.move_handles = []
         self.dragging = False
         self.drag_handle = None
         self.drag_start_mouse_world = None
         self.drag_start_brick_pos = None
+        self.drag_start_brick_positions = {}  # {brick: Vec3} for multi-brick drag
         self.scale_handles = []
         self.scale_dragging = False
         self.scale_drag_start_scale = None
         self.scale_drag_start_pos   = None
         self.scale_drag_center      = None
         self.scale_drag_start_mouse = None
+        self.scale_drag_start_all   = {}  # {brick: (start_scale, start_pos)} for multi-select
 
         # Sub-systems
         self.setup_collision_system()
@@ -187,12 +210,58 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         self.pickerNode.addSolid(self.pickerRay)
         self.picker.addCollider(self.pickerNP, self.pq)
 
-        self.accept("mouse1",    self.on_mouse1_down)
-        self.accept("mouse1-up", self.on_mouse1_up)
+        self.accept("mouse1",          self.on_mouse1_down)
+        self.accept("mouse1-up",       self.on_mouse1_up)
+        self.accept("shift-mouse1",    self.on_mouse1_down)
+        self.accept("shift-mouse1-up", self.on_mouse1_up)
+        self.accept("control-c",       self._copy_selection)
+        self.accept("control-v",       self._paste_selection)
+        self.accept("backspace",       self._delete_selection)
+        self.accept("control-z",       self._undo)
 
         self.setup_login_screen()
 
         self.accept("window-event", self._on_window_event)
+
+        # F8 — shirt UV debug mode (equip a shirt first, then press F8 in play mode)
+        def _f8_shirt_debug():
+            sid = getattr(self, '_equipped_shirt_id', None)
+            if not sid:
+                print('[SHIRT_DBG] No shirt equipped — equip a shirt first then press F8', flush=True)
+                return
+            import auth_client as _ac, threading as _thr
+            def _fetch(iid=sid):
+                full, _ = _ac.get_shop_item(iid)
+                if not full: return
+                img = full.get('image_data') or ''
+                b64 = img.split('|SHIRTDATA|')[0] if '|SHIRTDATA|' in img else img
+                if b64:
+                    def _go(task, _b=b64):
+                        self.start_shirt_debug(_b)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _go, '_shirtDbgStart', appendTask=True)
+            _thr.Thread(target=_fetch, daemon=True).start()
+        self.accept('f8', _f8_shirt_debug)
+
+        # F9 — pants UV debug mode
+        def _f9_pants_debug():
+            pid = getattr(self, '_equipped_pants_id', None)
+            if not pid:
+                print('[PANTS_DBG] No pants equipped — equip pants first then press F9', flush=True)
+                return
+            import auth_client as _ac, threading as _thr
+            def _fetch(iid=pid):
+                full, _ = _ac.get_shop_item(iid)
+                if not full: return
+                img = full.get('image_data') or ''
+                b64 = img.split('|PANTSDATA|')[0] if '|PANTSDATA|' in img else img
+                if b64:
+                    def _go(task, _b=b64):
+                        self.start_pants_debug(_b)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _go, '_pantsDbgStart', appendTask=True)
+            _thr.Thread(target=_fetch, daemon=True).start()
+        self.accept('f9', _f9_pants_debug)
 
     def _on_window_event(self, window):
         if window is not None and not window.getProperties().getOpen():
@@ -203,6 +272,10 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         if getattr(self, "_exiting", False):
             return
         self._exiting = True
+        try:
+            self.save_settings()
+        except Exception as e:
+            print("[APP] settings save error:", e)
         try:
             if getattr(self, "_mp_connected", False):
                 print("[APP] stopping multiplayer")
@@ -218,3 +291,38 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
     def userExit(self):
         """Called when the window X button is clicked."""
         self._graceful_exit()
+
+    def _settings_path(self):
+        user_data = os.path.join(
+            os.environ.get("APPDATA", os.path.expanduser("~")), "PhoenixHill"
+        )
+        os.makedirs(user_data, exist_ok=True)
+        return os.path.join(user_data, 'settings.json')
+
+    def _load_settings(self):
+        import json as _json
+        try:
+            with open(self._settings_path(), 'r') as f:
+                d = _json.load(f)
+            self._settings_invert_play     = bool(d.get('invert_play',      False))
+            self._settings_invert_editor   = bool(d.get('invert_editor',    False))
+            self._settings_editor_speed    = float(d.get('editor_speed',    15))
+            self._settings_play_fov        = int(d.get('play_fov',          80))
+            self._settings_render_distance = float(d.get('render_distance', 1000))
+        except Exception:
+            pass
+
+    def save_settings(self):
+        import json as _json
+        try:
+            d = {
+                'invert_play':     self._settings_invert_play,
+                'invert_editor':   self._settings_invert_editor,
+                'editor_speed':    self._settings_editor_speed,
+                'play_fov':        self._settings_play_fov,
+                'render_distance': getattr(self, '_settings_render_distance', 1000),
+            }
+            with open(self._settings_path(), 'w') as f:
+                _json.dump(d, f, indent=2)
+        except Exception as e:
+            print('Settings save failed:', e)

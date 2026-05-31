@@ -14,13 +14,15 @@ a = Analysis(
         ('citrus_orchard_puresky_4k.exr', '.'),
         ('Config.prc',                   '.'),
         ('arrow_nw.png',                 '.'),
+        ('server.cfg',                   '.'),
+        ('PiePlex logo.png',             '.'),
+        ('PiePlex logo.ico',             '.'),
     ],
     hiddenimports=p3d_h + dir_h + ['websockets'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'unittest', 'email', 'html', 'http', 'xml',
-              'xmlrpc', 'pydoc', 'doctest', 'difflib'],
+    excludes=[],
     noarchive=False,
 )
 
@@ -33,10 +35,10 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='PhoenixHill',
+    name='PiePlex',
     debug=False,
     strip=False,
     upx=False,          # UPX breaks panda3d DLLs
     console=False,      # no black console window
-    icon=None,
+    icon='PiePlex logo.ico',
 )

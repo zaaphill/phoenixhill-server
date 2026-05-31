@@ -851,7 +851,7 @@ class UIMixin:
             return
         if getattr(self, '_hat_model', None) is None:
             return
-        self._hat_z_offset = getattr(self, '_hat_z_offset', 0.0) + direction * 0.2
+        self._hat_z_offset = getattr(self, '_hat_z_offset', 0.0) + direction * 0.05
 
     def _upload_hat_texture(self):
         """Open a file dialog to pick an image and apply it to the hat model."""
@@ -875,7 +875,21 @@ class UIMixin:
         if not path:
             return
         try:
-            tex = self.loader.loadTexture(Filename.fromOsSpecific(path))
+            from panda3d.core import PNMImage, StringStream, Texture as _Tex
+            import io as _io
+            tex = None
+            try:
+                from PIL import Image as _PIL
+                img = _PIL.open(path).convert("RGB")
+                buf = _io.BytesIO()
+                img.save(buf, format="PNG")
+                ss  = StringStream(buf.getvalue())
+                pnm = PNMImage()
+                if pnm.read(ss):
+                    tex = _Tex()
+                    tex.load(pnm)
+            except ImportError:
+                tex = self.loader.loadTexture(Filename.fromOsSpecific(path))
             if tex:
                 hat_model.setTexture(tex, 1)
                 self._hat_texture_path = path
@@ -1041,18 +1055,17 @@ class UIMixin:
                     # -- Texture bytes (if any) -----------------------------------
                     tex_b64 = None
                     if tpv and _os.path.exists(tpv):
-                        img = PNMImage()
-                        img.read(_Fn.fromOsSpecific(tpv))
-                        if img.getXSize() > 512 or img.getYSize() > 512:
-                            scaled = PNMImage(512, 512)
-                            scaled.gaussianFilterFrom(1.0, img)
-                            img = scaled
-                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
-                            tmp = tf.name
-                        img.write(_Fn.fromOsSpecific(tmp))
-                        with open(tmp, 'rb') as fh:
-                            tex_b64 = base64.b64encode(fh.read()).decode()
-                        _os.unlink(tmp)
+                        try:
+                            from PIL import Image as _PILImg
+                            import io as _io
+                            _pil = _PILImg.open(tpv).convert("RGB")
+                            if _pil.width > 512 or _pil.height > 512:
+                                _pil = _pil.resize((512, 512), _PILImg.LANCZOS)
+                            _buf = _io.BytesIO()
+                            _pil.save(_buf, format="PNG")
+                            tex_b64 = base64.b64encode(_buf.getvalue()).decode()
+                        except Exception as _te:
+                            print(f"[HAT_UPLOAD] texture encode error: {_te}", flush=True)
 
                     # -- Transform metadata (plain Python values, no NodePath) ----
                     hat_data = _json.dumps({
@@ -1073,72 +1086,116 @@ class UIMixin:
                     self.taskMgr.doMethodLater(0, _err, "_hatUploadErr", appendTask=True)
                     return
 
-                # -- Thumbnail render (hat model only, 256×256) -------------------
+                # -- Thumbnail: avatar rig + hat, same framing as T-shirt thumbs ----
                 def _do_thumb_and_upload(task):
+                    thumb_b64 = ""
                     try:
-                        PMASK = BitMask32.bit(8)
-                        BUF_W, BUF_H = 256, 256
+                        from panda3d.core import (
+                            Filename as _Fn2, LColor, Point3,
+                            AmbientLight as _AL, DirectionalLight as _DL, Vec3,
+                        )
+                        PMASK  = BitMask32.bit(8)
+                        BUF_W  = BUF_H = 512
+                        RIG_Z  = -2.0   # calibrated: avatar sits lower so hat is visible
+                        DIST   = 11.0   # calibrated zoom
+                        CAM_Z  = 3.3    # same as T-shirt thumbnails
 
-                        # Load a fresh copy of the hat for thumbnail render
-                        from panda3d.core import Filename as _Fn2
-                        thumb_model = self.loader.loadModel(_Fn2.fromOsSpecific(obj_path))
-                        if thumb_model:
-                            thumb_model.setR(-90)
-                            thumb_model.reparentTo(self.render)
-                            thumb_model.setPos(0, 5000, 5)
-                            thumb_model.setShaderOff()
-                            thumb_model.setTwoSided(True)
-                            if tex_b64:
-                                tex_p2 = getattr(self, '_hat_texture_path', None)
-                                if tex_p2:
-                                    tex2 = self.loader.loadTexture(_Fn2.fromOsSpecific(tex_p2))
-                                    if tex2:
-                                        thumb_model.setTexture(tex2, 1)
-                            thumb_model.show(PMASK)
+                        _DCOL = {
+                            "head":      (244/255,204/255, 67/255,1),
+                            "torso":     ( 23/255,107/255,170/255,1),
+                            "left_arm":  (244/255,204/255, 67/255,1),
+                            "right_arm": (244/255,204/255, 67/255,1),
+                            "left_leg":  (165/255,188/255, 80/255,1),
+                            "right_leg": (165/255,188/255, 80/255,1),
+                        }
+                        colors = getattr(self, '_avatar_colors', None) or _DCOL
 
-                            buf = self.win.makeTextureBuffer("hat_thumb", BUF_W, BUF_H)
-                            from panda3d.core import LColor
-                            buf.setClearColor(LColor(0.20, 0.20, 0.28, 1.0))
-                            buf.setClearColorActive(True)
+                        rig = self.render.attachNewNode("hat_thumb_rig")
+                        rig.setPos(0, 5000, RIG_Z)
 
-                            _cn = Camera("hat_thumb_cam")
-                            _lens = PerspectiveLens()
-                            _lens.setFov(40)
-                            _lens.setNearFar(0.1, 10000)
-                            _cn.setLens(_lens)
-                            _cn.setCameraMask(PMASK)
-                            cam_np = self.render.attachNewNode(_cn)
-                            cam_np.setPos(0, 5000 - 8, 5)
-                            from panda3d.core import Point3
-                            cam_np.lookAt(Point3(0, 5000, 5))
-                            _dr = buf.makeDisplayRegion()
-                            _dr.setSort(10)
-                            _dr.setCamera(cam_np)
-                            orig_mask = self.camNode.getCameraMask()
-                            self.camNode.setCameraMask(orig_mask & ~PMASK)
+                        def _box(parent, sc, pos, col):
+                            m = self.loader.loadModel("models/box")
+                            m.reparentTo(parent); m.setScale(*sc); m.setPos(*pos)
+                            m.setColor(*col); m.setTextureOff(1); m.show(PMASK)
+                        _box(rig,(2,1,2),(-1,-0.5,2),   colors.get("torso",     _DCOL["torso"]))
+                        la=rig.attachNewNode("la"); la.setPos(-1.5,0,4)
+                        _box(la,(1,1,2),(-0.5,-0.5,-2), colors.get("left_arm",  _DCOL["left_arm"]))
+                        ra=rig.attachNewNode("ra"); ra.setPos(1.5,0,4)
+                        _box(ra,(1,1,2),(-0.5,-0.5,-2), colors.get("right_arm", _DCOL["right_arm"]))
+                        ll=rig.attachNewNode("ll"); ll.setPos(-0.5,0,2)
+                        _box(ll,(1,1,2),(-0.5,-0.5,-2), colors.get("left_leg",  _DCOL["left_leg"]))
+                        rl=rig.attachNewNode("rl"); rl.setPos(0.5,0,2)
+                        _box(rl,(1,1,2),(-0.5,-0.5,-2), colors.get("right_leg", _DCOL["right_leg"]))
+                        head = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+                        head.reparentTo(rig); head.setColor(*colors.get("head",_DCOL["head"]))
+                        head.setTwoSided(True); head.setTextureOff(1)
+                        head.setPos(0,0,4.55); head.show(PMASK)
 
-                            self.graphicsEngine.renderFrame()
-                            rtex = buf.getTexture()
-                            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
-                            pnm = PNMImage()
-                            thumb_b64 = ""
-                            if rtex.store(pnm):
-                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
-                                    tmp2 = tf.name
-                                pnm.write(_Fn2.fromOsSpecific(tmp2))
-                                with open(tmp2, 'rb') as fh:
-                                    thumb_b64 = base64.b64encode(fh.read()).decode()
-                                import os as _os2; _os2.unlink(tmp2)
+                        # Hat model on top of head
+                        hat_m = self.loader.loadModel(_Fn2.fromOsSpecific(obj_path))
+                        if hat_m:
+                            hat_m.setR(-90)
+                            hat_m.setScale(*[bsv[i]*msv[i] for i in range(3)])
+                            hat_m.setHpr(*hprv)
+                            tp2 = getattr(self, '_hat_texture_path', None)
+                            if tp2:
+                                import os as _os3, io as _io2
+                                if _os3.path.exists(tp2):
+                                    try:
+                                        from PIL import Image as _PILt
+                                        from panda3d.core import PNMImage as _PNMt, StringStream as _SSt, Texture as _Tt
+                                        _pi = _PILt.open(tp2).convert("RGB")
+                                        _bb = _io2.BytesIO()
+                                        _pi.save(_bb, format="PNG")
+                                        _ss = _SSt(_bb.getvalue())
+                                        _pnm = _PNMt()
+                                        if _pnm.read(_ss):
+                                            t2 = _Tt(); t2.load(_pnm)
+                                            hat_m.setTexture(t2, 1)
+                                    except Exception:
+                                        t2 = self.loader.loadTexture(_Fn2.fromOsSpecific(tp2))
+                                        if t2: hat_m.setTexture(t2, 1)
+                            hat_m.reparentTo(rig)
+                            hat_m.setPos(0, 0, 4.55 + 0.55 + zov)
+                            hat_m.setShaderOff(); hat_m.setTwoSided(True)
+                            hat_m.show(PMASK)
 
-                            self.graphicsEngine.removeWindow(buf)
-                            cam_np.removeNode()
-                            thumb_model.removeNode()
-                            self.camNode.setCameraMask(orig_mask)
-                        else:
-                            thumb_b64 = ""
+                        al = _AL("ht_al"); al.setColor(LColor(0.22,0.22,0.25,1))
+                        rig.setLight(rig.attachNewNode(al))
+                        dl = _DL("ht_dl"); dl.setColor(LColor(0.50,0.50,0.52,1))
+                        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20,15,0); rig.setLight(dlnp)
+
+                        buf = self.win.makeTextureBuffer("hat_thumb", BUF_W, BUF_H)
+                        buf.setClearColor(LColor(0.78,0.75,0.88,1.0))  # same as tshirt
+                        buf.setClearColorActive(True)
+                        _cn = Camera("hat_thumb_cam")
+                        _lens = PerspectiveLens()
+                        _lens.setFov(32); _lens.setAspectRatio(1.0); _lens.setNearFar(0.1,10000)
+                        _cn.setLens(_lens); _cn.setCameraMask(PMASK)
+                        cam_np = self.render.attachNewNode(_cn)
+                        cam_np.setPos(0, 5000 - DIST, CAM_Z)
+                        cam_np.lookAt(Point3(0, 5000, CAM_Z))
+                        _dr = buf.makeDisplayRegion(); _dr.setSort(10); _dr.setCamera(cam_np)
+                        orig_mask = self.camNode.getCameraMask()
+                        self.camNode.setCameraMask(orig_mask & ~PMASK)
+
+                        self.graphicsEngine.renderFrame()
+                        rtex = buf.getTexture()
+                        self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+                        pnm = PNMImage()
+                        if rtex.store(pnm):
+                            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                                tmp2 = tf.name
+                            pnm.write(_Fn2.fromOsSpecific(tmp2))
+                            with open(tmp2, 'rb') as fh:
+                                thumb_b64 = base64.b64encode(fh.read()).decode()
+                            import os as _os2; _os2.unlink(tmp2)
+
+                        self.graphicsEngine.removeWindow(buf)
+                        cam_np.removeNode(); rig.removeNode()
+                        self.camNode.setCameraMask(orig_mask)
                     except Exception as e:
                         print(f"[HAT_THUMB] {e}", flush=True)
-                        thumb_b64 = ""
 
                     import threading as _thr2, auth_client as _ac
                     def _upload():
@@ -1188,6 +1245,226 @@ class UIMixin:
             parent=card, pos=(0.26, 0, -0.29),
             relief=1, command=_cancel,
         )
+
+    def _hat_thumbnail_debug_REMOVED(self):
+        from direct.gui.DirectGui import DirectFrame, DirectLabel, DirectButton
+        from panda3d.core import (
+            BitMask32, Camera, PerspectiveLens, PNMImage,
+            LColor, Point3, AmbientLight, DirectionalLight,
+            Filename, Vec3,
+        )
+        from direct.task import Task
+
+        # Close any existing debug window
+        existing = getattr(self, '_hat_dbg_overlay', None)
+        if existing:
+            try: existing.destroy()
+            except Exception: pass
+        self.taskMgr.remove("_hatDbgTask")
+        for k in ('arrow_up', 'arrow_down', 'arrow_left', 'arrow_right'):
+            self.ignore(k)
+
+        # Adjustable params — same defaults as _render_shop_thumbnails
+        self._hat_dbg_rig_z  =  0.0   # rig Z offset: negative = avatar lower in frame
+        self._hat_dbg_dist   = 12.0   # camera distance (same default as tshirt thumbs)
+        self._hat_dbg_dirty  = True
+
+        PMASK = BitMask32.bit(11)
+        BUF_W = BUF_H = 300
+
+        # ── Build avatar rig at a parked world position ────────────────────
+        _DEFAULTS_COL = {
+            "head":      (244/255, 204/255,  67/255, 1),
+            "torso":     ( 23/255, 107/255, 170/255, 1),
+            "left_arm":  (244/255, 204/255,  67/255, 1),
+            "right_arm": (244/255, 204/255,  67/255, 1),
+            "left_leg":  (165/255, 188/255,  80/255, 1),
+            "right_leg": (165/255, 188/255,  80/255, 1),
+        }
+        colors = getattr(self, '_avatar_colors', None) or _DEFAULTS_COL
+
+        rig = self.render.attachNewNode("hatdbg_rig")
+        rig.setPos(0, 7000, 0)
+
+        def _box(parent, scale, pos, col):
+            m = self.loader.loadModel("models/box")
+            m.reparentTo(parent); m.setScale(*scale); m.setPos(*pos)
+            m.setColor(*col); m.setTextureOff(1); m.show(PMASK); return m
+
+        _box(rig, (2,1,2), (-1,-0.5,2), colors.get("torso", _DEFAULTS_COL["torso"]))
+        la = rig.attachNewNode("la"); la.setPos(-1.5,0,4)
+        _box(la,(1,1,2),(-0.5,-0.5,-2), colors.get("left_arm",  _DEFAULTS_COL["left_arm"]))
+        ra = rig.attachNewNode("ra"); ra.setPos(1.5,0,4)
+        _box(ra,(1,1,2),(-0.5,-0.5,-2), colors.get("right_arm", _DEFAULTS_COL["right_arm"]))
+        ll = rig.attachNewNode("ll"); ll.setPos(-0.5,0,2)
+        _box(ll,(1,1,2),(-0.5,-0.5,-2), colors.get("left_leg",  _DEFAULTS_COL["left_leg"]))
+        rl = rig.attachNewNode("rl"); rl.setPos(0.5,0,2)
+        _box(rl,(1,1,2),(-0.5,-0.5,-2), colors.get("right_leg", _DEFAULTS_COL["right_leg"]))
+
+        head_cyl = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+        head_cyl.reparentTo(rig)
+        head_cyl.setColor(*colors.get("head", _DEFAULTS_COL["head"]))
+        head_cyl.setTwoSided(True); head_cyl.setTextureOff(1)
+        head_cyl.setPos(0,0,4.55); head_cyl.show(PMASK)
+
+        # Load hat model onto rig head
+        hat_copy = self.loader.loadModel(Filename.fromOsSpecific(obj_path))
+        if hat_copy:
+            hat_copy.setR(-90)
+            if hat_brick and not hat_brick.isEmpty():
+                bs = hat_brick.getScale()
+                ms = hat_model.getScale() if hat_model and not hat_model.isEmpty() else Vec3(1,1,1)
+                hat_copy.setScale(bs.x*ms.x, bs.y*ms.y, bs.z*ms.z)
+                hpr = getattr(self, '_hat_saved_hpr', None) or (hat_model.getH(), hat_model.getP(), hat_model.getR())
+                hat_copy.setHpr(*hpr)
+                z_off = getattr(self, '_hat_z_offset', 0.0)
+            else:
+                hat_copy.setScale(2,2,2); z_off = 0.0
+            # Apply texture if one was uploaded
+            tex_p = getattr(self, '_hat_texture_path', None)
+            if tex_p and __import__('os').path.exists(tex_p):
+                tex = self.loader.loadTexture(Filename.fromOsSpecific(tex_p))
+                if tex:
+                    hat_copy.setTexture(tex, 1)
+            hat_copy.reparentTo(rig)
+            hat_copy.setPos(0, 0, 4.55 + 0.55 + z_off)
+            hat_copy.setShaderOff(); hat_copy.setTwoSided(True)
+            hat_copy.show(PMASK)
+
+        # Lighting for rig
+        al = AmbientLight("hdbg_al"); al.setColor(LColor(0.22,0.22,0.25,1))
+        rig.setLight(rig.attachNewNode(al))
+        dl = DirectionalLight("hdbg_dl"); dl.setColor(LColor(0.50,0.50,0.52,1))
+        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20,15,0); rig.setLight(dlnp)
+
+        # ── Offscreen buffer + camera ─────────────────────────────────────
+        buf = self.win.makeTextureBuffer("hatdbg_buf", BUF_W, BUF_H)
+        buf.setClearColor(LColor(0.78,0.75,0.88,1.0)); buf.setClearColorActive(True)
+
+        cam_node = Camera("hatdbg_cam")
+        lens = PerspectiveLens(); lens.setFov(32); lens.setAspectRatio(1.0); lens.setNearFar(0.1,10000)
+        cam_node.setLens(lens); cam_node.setCameraMask(PMASK)
+        cam_np = self.render.attachNewNode(cam_node)
+        _dr = buf.makeDisplayRegion(); _dr.setSort(10); _dr.setCamera(cam_np)
+        orig_mask = self.camNode.getCameraMask()
+        self.camNode.setCameraMask(orig_mask & ~PMASK)
+
+        self._hat_dbg_rig     = rig
+        self._hat_dbg_cam_np  = cam_np
+        self._hat_dbg_buf     = buf
+        self._hat_dbg_orig_mask = orig_mask
+
+        def _update_camera():
+            # Identical to _render_shop_thumbnails: FOV=32, cam_z=3.3, dist=12 default.
+            # Only rig_z and dist are adjustable — camera is always centered at X=0.
+            rz   = self._hat_dbg_rig_z
+            dist = self._hat_dbg_dist
+            rig.setPos(0, 7000, rz)
+            cam_np.setPos(0, 7000 - dist, 3.3)
+            cam_np.lookAt(Point3(0, 7000, 3.3))
+
+        # ── Overlay UI ────────────────────────────────────────────────────
+        overlay = DirectFrame(
+            frameColor=(0,0,0,0.88), frameSize=(-3,3,-3,3),
+            sortOrder=600, state='normal',
+        )
+        self._hat_dbg_overlay = overlay
+
+        preview_card = DirectFrame(
+            frameColor=(1,1,1,1),
+            frameSize=(-0.55,0.55,-0.55,0.55),
+            parent=overlay, pos=(-0.7, 0, 0),
+        )
+        preview_card.setTransparency(False)
+
+        coords_lbl = DirectLabel(
+            text="rig_z: 0.0 | dist: 12.0",
+            text_fg=(0.9,0.95,1,1), text_scale=0.032,
+            frameColor=(0,0,0,0),
+            parent=overlay, pos=(0.55, 0, 0.65),
+        )
+        DirectLabel(
+            text="UP/DOWN: move avatar up/down  |  +/-: zoom",
+            text_fg=(0.7,0.75,0.85,1), text_scale=0.026,
+            frameColor=(0,0,0,0),
+            parent=overlay, pos=(0.55, 0, 0.55),
+        )
+
+        def _close_dbg():
+            self.taskMgr.remove("_hatDbgTask")
+            for k in ('arrow_up','arrow_down','=','+','-'):
+                self.ignore(k)
+            buf2 = getattr(self, '_hat_dbg_buf', None)
+            if buf2: self.graphicsEngine.removeWindow(buf2)
+            np2 = getattr(self, '_hat_dbg_cam_np', None)
+            if np2 and not np2.isEmpty(): np2.removeNode()
+            rig2 = getattr(self, '_hat_dbg_rig', None)
+            if rig2 and not rig2.isEmpty(): rig2.removeNode()
+            orig = getattr(self, '_hat_dbg_orig_mask', None)
+            if orig is not None: self.camNode.setCameraMask(orig)
+            self._hat_dbg_buf = self._hat_dbg_cam_np = self._hat_dbg_rig = None
+            ov = getattr(self, '_hat_dbg_overlay', None)
+            if ov:
+                try: ov.destroy()
+                except Exception: pass
+            self._hat_dbg_overlay = None
+            # Restore all four hat-flip arrow bindings
+            for direction in ("left", "right", "up", "down"):
+                self.accept(f"arrow_{direction}", self._hat_flip, [direction])
+
+        DirectButton(
+            text="Close",
+            text_fg=(1,1,1,1), text_scale=0.030,
+            frameColor=(0.55,0.18,0.18,1),
+            frameSize=(-0.12,0.12,-0.036,0.036),
+            parent=overlay, pos=(0.55, 0, -0.65),
+            relief=1, command=_close_dbg,
+        )
+
+        # Arrow key handlers
+        def _step_z_up():
+            self._hat_dbg_rig_z += 1.0; self._hat_dbg_dirty = True
+        def _step_z_dn():
+            self._hat_dbg_rig_z -= 1.0; self._hat_dbg_dirty = True
+        def _zoom_in():
+            self._hat_dbg_dist = max(2, self._hat_dbg_dist - 1.0)
+            self._hat_dbg_dirty = True
+        def _zoom_out():
+            self._hat_dbg_dist += 1.0; self._hat_dbg_dirty = True
+
+        # Override hat-flip bindings temporarily
+        self.ignore("arrow_left"); self.ignore("arrow_right")
+        self.ignore("arrow_up");   self.ignore("arrow_down")
+        self.accept("arrow_up",   _step_z_up)
+        self.accept("arrow_down", _step_z_dn)
+        self.accept("=",          _zoom_in)
+        self.accept("+",          _zoom_in)
+        self.accept("-",          _zoom_out)
+
+        # ── Render task ───────────────────────────────────────────────────
+        def _dbg_task(task):
+            if not getattr(self, '_hat_dbg_dirty', False):
+                return Task.cont
+            self._hat_dbg_dirty = False
+            _update_camera()
+            self.graphicsEngine.renderFrame()
+            rtex = buf.getTexture()
+            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+            pnm = PNMImage()
+            if rtex.store(pnm):
+                from panda3d.core import Texture
+                tex = Texture(); tex.load(pnm)
+                tex.setMinfilter(Texture.FTLinear)
+                tex.setMagfilter(Texture.FTLinear)
+                preview_card["frameTexture"] = tex
+                preview_card["frameColor"]   = (1,1,1,1)
+            coords_lbl["text"] = (
+                f"rig_z: {self._hat_dbg_rig_z:.1f}  |  dist: {self._hat_dbg_dist:.1f}"
+            )
+            return Task.cont
+
+        self.taskMgr.add(_dbg_task, "_hatDbgTask")
+        self._hat_dbg_dirty = True   # trigger first render
 
     def _on_window_event(self, window):
         # Only the background bar width needs updating; buttons and status

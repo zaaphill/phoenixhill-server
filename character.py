@@ -5,6 +5,7 @@ from panda3d.core import (
     GeomVertexFormat, GeomVertexData, Geom,
     GeomVertexWriter, GeomTriangles, GeomNode,
     CardMaker, TransparencyAttrib, Filename,
+    TextureStage,
 )
 from direct.task import Task
 from math import sin, cos, atan2, degrees, pi
@@ -392,10 +393,9 @@ class CharacterMixin:
             np.setH(180)
             np.setTexture(tex)
             np.setTransparency(TransparencyAttrib.MAlpha)
-            np.setLightOff()
             np.setShaderOff()
             np.setDepthWrite(False)
-            np.setDepthOffset(1)
+            np.setDepthOffset(3)  # pants=1, shirt=2, tshirt=3 so tshirt renders on top
             self._tshirt_node = np
             self._tshirt_anchor = anchor
         except Exception as e:
@@ -407,6 +407,713 @@ class CharacterMixin:
             if n and not n.isEmpty():
                 n.removeNode()
             setattr(self, attr, None)
+
+    # Standard Roblox R6 shirt template regions (pixels) for a 585×559 template.
+    # Based on 32px per Roblox stud: torso 2×1×3 studs, arms 1×1×3 studs.
+    _SHIRT_REGIONS = {
+        # Torso
+        "torso_up":    (243,   9, 345,  71),
+        "torso_left":  (364,  78, 416, 194),
+        "torso_front": (232,  74, 356, 196),
+        "torso_right": (173,  78, 225, 194),
+        "torso_back":  (430,  74, 554, 196),
+        "torso_down":  (230, 227, 326, 259),
+        # Right arm
+        "rarm_up":    (221, 298, 275, 350),
+        "rarm_left":  ( 19, 356,  81, 482),
+        "rarm_front": (219, 356, 279, 480),
+        "rarm_right": (512, 358, 568, 478),
+        "rarm_back":  ( 86, 356, 146, 480),
+        "rarm_down":  (218, 490, 278, 550),
+        # Left arm
+        "larm_up":    (311, 297, 365, 349),
+        "larm_left":  (378, 360, 434, 480),
+        "larm_front": (313, 358, 369, 478),
+        "larm_right": (511, 360, 563, 476),
+        "larm_back":  (446, 358, 498, 478),
+        "larm_down":  (218, 486, 278, 546),
+    }
+    _SHIRT_TEMPLATE_W = 585
+    _SHIRT_TEMPLATE_H = 559
+
+    # Standard Roblox R6 pants template regions (pixels) for a 585×559 template.
+    # Torso section uses the same template layout as shirts (calibrate with F8 debug).
+    _PANTS_REGIONS = {
+        # Torso/waist — same layout as shirt torso (pants creator can fill this area)
+        "torso_up":    (263,   9, 325,  71),
+        "torso_left":  (364,  78, 416, 194),
+        "torso_front": (232,  74, 356, 196),
+        "torso_right": (173,  78, 225, 194),
+        "torso_back":  (430,  74, 554, 196),
+        "torso_down":  (230, 227, 326, 259),
+        # Right leg — same template position as left arm in shirt template
+        "rleg_up":    (311, 297, 365, 349),
+        "rleg_left":  (378, 360, 434, 480),
+        "rleg_front": (313, 358, 369, 478),
+        "rleg_right": (511, 360, 563, 476),
+        "rleg_back":  (446, 358, 498, 478),
+        "rleg_down":  (218, 486, 278, 546),
+        # Left leg — same template position as right arm in shirt template
+        "lleg_up":    (221, 298, 275, 350),
+        "lleg_left":  ( 20, 355,  80, 479),
+        "lleg_front": (219, 356, 279, 480),
+        "lleg_right": (512, 358, 568, 478),
+        "lleg_back":  ( 86, 356, 146, 480),
+        "lleg_down":  (218, 490, 278, 550),
+    }
+    _PANTS_TEMPLATE_W = 585
+    _PANTS_TEMPLATE_H = 559
+
+    @staticmethod
+    def _make_shirt_box_geom(w, d, h, regions, template_w=585, template_h=559):
+        """
+        Build a GeomNode box with UV coordinates sampling the correct shirt template regions.
+        w=X size, d=Y size, h=Z size. regions maps face name → (px_l, px_t, px_r, px_b).
+        The full shirt texture is applied once; UVs pull each region from the template.
+        """
+        from panda3d.core import (
+            GeomVertexFormat, GeomVertexData, GeomVertexWriter,
+            GeomTriangles, Geom, GeomNode,
+        )
+        TW, TH = float(template_w), float(template_h)
+
+        def to_uv(px, py):
+            return px / TW, 1.0 - py / TH
+
+        def region_uvs(key):
+            if key not in regions:
+                return None
+            px0, py0, px1, py1 = regions[key]
+            ul, vt = to_uv(px0, py0)   # upper-left pixel → low-U, high-V
+            ur, vb = to_uv(px1, py1)   # lower-right pixel → high-U, low-V
+            # Returned as (BL, BR, TR, TL) UV pairs
+            return (ul, vb), (ur, vb), (ur, vt), (ul, vt)
+
+        fmt   = GeomVertexFormat.getV3n3t2()
+        vdata = GeomVertexData('shirt_box', fmt, Geom.UHStatic)
+        vw    = GeomVertexWriter(vdata, 'vertex')
+        nw    = GeomVertexWriter(vdata, 'normal')
+        tw    = GeomVertexWriter(vdata, 'texcoord')
+        prim  = GeomTriangles(Geom.UHStatic)
+        vi    = [0]
+
+        def quad(verts, uvs, normal):
+            for (x, y, z), (u, v) in zip(verts, uvs):
+                vw.addData3(x, y, z); nw.addData3(*normal); tw.addData2(u, v)
+            i = vi[0]
+            prim.addVertices(i, i+1, i+2); prim.addVertices(i, i+2, i+3)
+            vi[0] += 4
+
+        # Front (Y=d, +Y normal). Template left = char right (+X) so flip U.
+        uvs = region_uvs('front')
+        if uvs:
+            bl, br, tr, tl = uvs
+            quad([(0,d,0),(w,d,0),(w,d,h),(0,d,h)], [br, bl, tl, tr], (0, 1, 0))
+
+        # Back (Y=0, -Y normal). No U-flip: local X=0 (char left) → u_left.
+        uvs = region_uvs('back')
+        if uvs:
+            bl, br, tr, tl = uvs
+            quad([(0,0,0),(w,0,0),(w,0,h),(0,0,h)], [bl, br, tr, tl], (0, -1, 0))
+
+        # Right (X=w, +X normal). Looking from +X: Y=d=front, Y=0=back.
+        uvs = region_uvs('right')
+        if uvs:
+            quad([(w,d,0),(w,0,0),(w,0,h),(w,d,h)], list(uvs), (1, 0, 0))
+
+        # Left (X=0, -X normal). Looking from -X: Y=0=back, Y=d=front.
+        uvs = region_uvs('left')
+        if uvs:
+            bl, br, tr, tl = uvs
+            quad([(0,0,0),(0,d,0),(0,d,h),(0,0,h)], [br, bl, tl, tr], (-1, 0, 0))
+
+        # Top (Z=h, +Z normal). U=X, V=Y(front→back).
+        uvs = region_uvs('top')
+        if uvs:
+            quad([(0,d,h),(w,d,h),(w,0,h),(0,0,h)], list(uvs), (0, 0, 1))
+
+        # Bottom (Z=0, -Z normal).
+        uvs = region_uvs('bottom')
+        if uvs:
+            quad([(0,0,0),(w,0,0),(w,d,0),(0,d,0)], list(uvs), (0, 0, -1))
+
+        geom = Geom(vdata); geom.addPrimitive(prim)
+        node = GeomNode('shirt_box'); node.addGeom(geom)
+        return node
+
+    def apply_shirt(self, image_b64):
+        """Apply a Roblox shirt template using UV-mapped custom geometry (not cards)."""
+        print(f"[SHIRT_DBG] apply_shirt called, b64 length={len(image_b64) if image_b64 else 0}", flush=True)
+        self.remove_shirt()
+        if not image_b64:
+            print("[SHIRT_DBG] apply_shirt: empty image_b64, aborting", flush=True); return
+        if "|SHIRTDATA|" in image_b64:
+            image_b64 = image_b64.split("|SHIRTDATA|")[0]
+        try:
+            import base64
+            from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+
+            raw = base64.b64decode(image_b64)
+            print(f"[SHIRT_DBG] decoded {len(raw)} bytes", flush=True)
+            ss  = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss):
+                print("[SHIRT_DBG] PNMImage.read() FAILED", flush=True); return
+            print(f"[SHIRT_DBG] PNMImage ok: {pnm.getXSize()}x{pnm.getYSize()}", flush=True)
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+
+            def attach(parent, reg_map, w, d, h, pos):
+                node = self._make_shirt_box_geom(w, d, h, reg_map)
+                np = parent.attachNewNode(node)
+                np.setPos(*pos)
+                np.setTexture(tex)
+                np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(2)  # pants=1, shirt=2, tshirt=3
+                np.setTransparency(TransparencyAttrib.MAlpha)
+                return np
+
+            R = self._SHIRT_REGIONS
+            nodes = [
+                attach(self.character, {
+                    'front': R['torso_front'], 'back':  R['torso_back'],
+                    'left':  R['torso_left'],  'right': R['torso_right'],
+                    'top':   R['torso_up'],    'bottom':R['torso_down'],
+                }, 2, 1, 2, (-1, -0.5, 2)),
+
+                attach(self.right_arm_pivot, {
+                    'front': R['rarm_front'], 'back':  R['rarm_back'],
+                    'left':  R['rarm_left'],  'right': R['rarm_right'],
+                    'top':   R['rarm_up'],    'bottom':R['rarm_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+
+                attach(self.left_arm_pivot, {
+                    'front': R['larm_front'], 'back':  R['larm_back'],
+                    'left':  R['larm_left'],  'right': R['larm_right'],
+                    'top':   R['larm_up'],    'bottom':R['larm_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+            ]
+            self._shirt_nodes = nodes
+            print("[SHIRT] applied UV-mapped shirt", flush=True)
+        except Exception as e:
+            print(f"[SHIRT] apply failed: {e}", flush=True)
+
+    def remove_shirt(self):
+        import traceback as _tb
+        nodes = getattr(self, '_shirt_nodes', [])
+        if nodes:
+            print(f"[SHIRT_DBG] remove_shirt called with {len(nodes)} nodes, caller:", flush=True)
+            _tb.print_stack(limit=5)
+        for n in nodes:
+            if n and not n.isEmpty():
+                n.removeNode()
+        self._shirt_nodes = []
+
+    def apply_pants(self, image_b64):
+        """Apply a Roblox pants template using UV-mapped custom geometry."""
+        self.remove_pants()
+        if "|PANTSDATA|" in image_b64:
+            image_b64 = image_b64.split("|PANTSDATA|")[0]
+        try:
+            import base64
+            from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+
+            raw = base64.b64decode(image_b64)
+            ss  = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss):
+                print("[PANTS] failed to decode image", flush=True); return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+
+            def attach(parent, reg_map, w, d, h, pos):
+                node = self._make_shirt_box_geom(w, d, h, reg_map,
+                    template_w=self._PANTS_TEMPLATE_W, template_h=self._PANTS_TEMPLATE_H)
+                np = parent.attachNewNode(node)
+                np.setPos(*pos); np.setTexture(tex)
+                np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(1)  # above body; shirt uses 2 so shirt renders on top
+                np.setTransparency(TransparencyAttrib.MAlpha)
+                return np
+
+            R = self._PANTS_REGIONS
+            nodes = [
+                attach(self.character, {
+                    'front': R['torso_front'], 'back':  R['torso_back'],
+                    'left':  R['torso_left'],  'right': R['torso_right'],
+                    'top':   R['torso_up'],    'bottom':R['torso_down'],
+                }, 2, 1, 2, (-1, -0.5, 2)),
+                attach(self.right_leg_pivot, {
+                    'front': R['rleg_front'], 'back':  R['rleg_back'],
+                    'left':  R['rleg_left'],  'right': R['rleg_right'],
+                    'top':   R['rleg_up'],    'bottom':R['rleg_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+                attach(self.left_leg_pivot, {
+                    'front': R['lleg_front'], 'back':  R['lleg_back'],
+                    'left':  R['lleg_left'],  'right': R['lleg_right'],
+                    'top':   R['lleg_up'],    'bottom':R['lleg_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+            ]
+            self._pants_nodes = nodes
+            print("[PANTS] applied UV-mapped pants", flush=True)
+        except Exception as e:
+            print(f"[PANTS] apply failed: {e}", flush=True)
+
+    def remove_pants(self):
+        for n in getattr(self, '_pants_nodes', []):
+            if n and not n.isEmpty():
+                n.removeNode()
+        self._pants_nodes = []
+
+    # ── Shirt UV debug mode ─────────────────────────────────────────────────
+    # Each entry: (region_key, parent_attr, pos, card_frame, hpr)
+    _SHIRT_DBG_FACES = [
+        ('torso_front','character',      ( 0,     0.52,  2),(-1, 1, 0,  2),(180,0,0)),
+        ('torso_back', 'character',      ( 0,    -0.52,  2),(-1, 1, 0,  2),(  0,0,0)),
+        ('torso_right','character',      ( 1.02,  0,     2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('torso_left', 'character',      (-1.02,  0,     2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('torso_up',   'character',      ( 0,     0,  4.02),(-1,1,-0.5,0.5),(0,-90,0)),
+        ('torso_down', 'character',      ( 0,     0,  1.98),(-1,1,-0.5,0.5),(0, 90,0)),
+        ('rarm_front', 'right_arm_pivot',( 0,     0.52, -2),(-0.5,0.5,0,2),(180,0,0)),
+        ('rarm_back',  'right_arm_pivot',( 0,    -0.52, -2),(-0.5,0.5,0,2),(  0,0,0)),
+        ('rarm_right', 'right_arm_pivot',( 0.52,  0,    -2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('rarm_left',  'right_arm_pivot',(-0.52,  0,    -2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('rarm_up',    'right_arm_pivot',( 0,     0,  0.02),(-0.5,0.5,-0.5,0.5),(0,-90,0)),
+        ('rarm_down',  'right_arm_pivot',( 0,     0, -2.02),(-0.5,0.5,-0.5,0.5),(0, 90,0)),
+        ('larm_front', 'left_arm_pivot', ( 0,     0.52, -2),(-0.5,0.5,0,2),(180,0,0)),
+        ('larm_back',  'left_arm_pivot', ( 0,    -0.52, -2),(-0.5,0.5,0,2),(  0,0,0)),
+        ('larm_right', 'left_arm_pivot', ( 0.52,  0,    -2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('larm_left',  'left_arm_pivot', (-0.52,  0,    -2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('larm_up',    'left_arm_pivot', ( 0,     0,  0.02),(-0.5,0.5,-0.5,0.5),(0,-90,0)),
+        ('larm_down',  'left_arm_pivot', ( 0,     0, -2.02),(-0.5,0.5,-0.5,0.5),(0, 90,0)),
+    ]
+
+    def start_shirt_debug(self, image_b64):
+        """Shirt UV debug mode.
+        Tab/Shift-Tab: cycle faces   Arrows: move region
+        Ctrl+Arrows: resize (zoom)   \\ / Shift-\\: stretch all sides out/in
+        +/-: step size   P: print coords   F8: exit"""
+        self.stop_shirt_debug()
+        self.remove_shirt()
+        if '|SHIRTDATA|' in image_b64:
+            image_b64 = image_b64.split('|SHIRTDATA|')[0]
+        try:
+            from PIL import Image as _PIL
+            import base64, io as _io
+            from panda3d.core import PNMImage, StringStream, Texture
+            from direct.gui.OnscreenText import OnscreenText
+            from panda3d.core import TextNode as _TN
+
+            raw   = base64.b64decode(image_b64)
+            tmpl  = _PIL.open(_io.BytesIO(raw)).convert("RGBA")
+            # Normalize to 585×559 so crop coords are always correct
+            if tmpl.size != (585, 559):
+                tmpl = tmpl.resize((585, 559), _PIL.LANCZOS)
+
+            self._sdbg_tmpl  = tmpl
+            self._sdbg_raw   = image_b64
+            self._sdbg_regs  = {k: list(v) for k, v in self._SHIRT_REGIONS.items()}
+            self._sdbg_idx   = 0
+            self._sdbg_step  = 2
+            self._sdbg_cards = {}
+
+            for (key, par_attr, pos, frame, hpr) in self._SHIRT_DBG_FACES:
+                parent = getattr(self, par_attr, None)
+                if not parent: continue
+                cm = CardMaker(f'sdbg_{key}'); cm.setFrame(*frame)
+                anchor = parent.attachNewNode(f'sdbg_a_{key}'); anchor.setPos(*pos)
+                card   = anchor.attachNewNode(cm.generate()); card.setHpr(*hpr)
+                card.setTransparency(TransparencyAttrib.MAlpha)
+                card.setShaderOff(); card.setLightOff()
+                card.setDepthOffset(2); card.setDepthWrite(False)
+                card.setTwoSided(True)   # prevent blank faces from backface culling
+                self._sdbg_cards[key] = (anchor, card)
+                self._sdbg_rebuild_tex(key)
+
+            self._sdbg_lbl_face = OnscreenText(
+                text='', pos=(-1.55, 0.92), scale=0.042,
+                fg=(1, 1, 0.2, 1), align=_TN.ALeft, mayChange=True)
+            self._sdbg_lbl_coord = OnscreenText(
+                text='', pos=(-1.55, 0.80), scale=0.048,
+                fg=(0.3, 1, 0.3, 1), align=_TN.ALeft, mayChange=True)
+            self._sdbg_lbl_hint = OnscreenText(
+                text='Tab/Shift-Tab: cycle   Arrows: move   Shift+Arrows: resize   +/-: zoom\n'
+                     '[/]: shrink/expand width   ,/.: shrink/expand height   Z/X: speed   P: print   F8: exit',
+                pos=(-1.55, 0.65), scale=0.034,
+                fg=(0.8, 0.8, 1, 1), align=_TN.ALeft, mayChange=False)
+
+            self.accept('tab',               self._sdbg_cycle,       [ 1])
+            self.accept('shift-tab',         self._sdbg_cycle,       [-1])
+            # Move
+            self.accept('arrow_left',        self._sdbg_move,        [-1,  0])
+            self.accept('arrow_right',       self._sdbg_move,        [ 1,  0])
+            self.accept('arrow_up',          self._sdbg_move,        [ 0, -1])
+            self.accept('arrow_down',        self._sdbg_move,        [ 0,  1])
+            # Resize right/bottom edge (Shift avoids Windows Ctrl+Arrow intercept)
+            self.accept('shift-arrow_left',  self._sdbg_resize,      [-1,  0])
+            self.accept('shift-arrow_right', self._sdbg_resize,      [ 1,  0])
+            self.accept('shift-arrow_up',    self._sdbg_resize,      [ 0, -1])
+            self.accept('shift-arrow_down',  self._sdbg_resize,      [ 0,  1])
+            # Stretch: [/] = shrink/expand width,  ,/. = shrink/expand height
+            self.accept('[',                 self._sdbg_stretch_w,   [-1])
+            self.accept(']',                 self._sdbg_stretch_w,   [ 1])
+            self.accept(',',                 self._sdbg_stretch_h,   [-1])
+            self.accept('.',                 self._sdbg_stretch_h,   [ 1])
+            self.accept('=',                 self._sdbg_do_zoom,     [ 1])
+            self.accept('-',                 self._sdbg_do_zoom,     [-1])
+            self.accept('z',                 self._sdbg_step_sz,     [ 1])
+            self.accept('x',                 self._sdbg_step_sz,     [-1])
+            self.accept('delete',            self._sdbg_toggle_arms)
+            self.accept('p',                 self._sdbg_print)
+            self.accept('f8',               self.stop_shirt_debug)
+
+            self._sdbg_update_hud()
+            print('[SHIRT_DBG] started', flush=True)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            print(f'[SHIRT_DBG] start error: {e}', flush=True)
+
+    def stop_shirt_debug(self):
+        for attr in ('_sdbg_lbl_face', '_sdbg_lbl_coord', '_sdbg_lbl_hint'):
+            w = getattr(self, attr, None)
+            if w:
+                try: w.destroy()
+                except Exception: pass
+            setattr(self, attr, None)
+        for key, (anchor, _) in getattr(self, '_sdbg_cards', {}).items():
+            if anchor and not anchor.isEmpty(): anchor.removeNode()
+        self._sdbg_cards = {}
+        for ev in ('tab','shift-tab','arrow_left','arrow_right','arrow_up','arrow_down',
+                   'shift-arrow_left','shift-arrow_right','shift-arrow_up','shift-arrow_down',
+                   '[',']',',','.','=','-','z','x','delete','p','f8'):
+            self.ignore(ev)
+        for d in ('left','right','up','down'):
+            if hasattr(self, '_hat_flip'):
+                self.accept(f'arrow_{d}', self._hat_flip, [d])
+        self._sdbg_tmpl = None
+        if getattr(self, '_sdbg_arms_out', False):
+            self._sdbg_arms_out = False
+            r_pivot = getattr(self, 'right_arm_pivot', None)
+            l_pivot = getattr(self, 'left_arm_pivot', None)
+            if r_pivot: r_pivot.setR(0)
+            if l_pivot: l_pivot.setR(0)
+        print('[SHIRT_DBG] stopped', flush=True)
+
+    def _sdbg_rebuild_tex(self, key):
+        """Crop the template region and apply as a fresh texture to that face card."""
+        if key not in getattr(self, '_sdbg_cards', {}): return
+        _, card = self._sdbg_cards[key]
+        tmpl = getattr(self, '_sdbg_tmpl', None)
+        if tmpl is None: return
+        from panda3d.core import PNMImage, StringStream, Texture
+        import io as _io
+        px0, py0, px1, py1 = self._sdbg_regs[key]
+        # Clamp to template bounds
+        px0 = max(0, px0); py0 = max(0, py0)
+        px1 = min(585, max(px0+1, px1)); py1 = min(559, max(py0+1, py1))
+        crop = tmpl.crop((px0, py0, px1, py1))
+        buf  = _io.BytesIO(); crop.save(buf, 'PNG')
+        ss   = StringStream(buf.getvalue()); pnm = PNMImage()
+        if pnm.read(ss):
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            card.setTexture(tex, 1)
+
+    def _sdbg_update_hud(self):
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        idx   = getattr(self, '_sdbg_idx', 0) % len(faces)
+        key   = faces[idx]
+        reg   = self._sdbg_regs.get(key, [0,0,0,0])
+        step  = getattr(self, '_sdbg_step', 2)
+        lf = getattr(self, '_sdbg_lbl_face',  None)
+        lc = getattr(self, '_sdbg_lbl_coord', None)
+        if lf: lf.setText(f'Face {idx+1}/{len(faces)}: {key}   step={step}px')
+        if lc: lc.setText(f'({reg[0]}, {reg[1]}, {reg[2]}, {reg[3]})')
+        for k, (_, card) in self._sdbg_cards.items():
+            card.setColorScale((1, 1, 0.1, 1) if k == key else (1, 1, 1, 1))
+
+    def _sdbg_cycle(self, d):
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        self._sdbg_idx = (self._sdbg_idx + d) % len(faces)
+        self._sdbg_update_hud()
+
+    def _sdbg_move(self, dx, dy):
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        key = faces[self._sdbg_idx % len(faces)]
+        s = self._sdbg_step; r = self._sdbg_regs[key]
+        r[0] += dx*s; r[2] += dx*s
+        r[1] += dy*s; r[3] += dy*s
+        self._sdbg_rebuild_tex(key); self._sdbg_update_hud()
+
+    def _sdbg_resize(self, dw, dh):
+        """Ctrl+arrows: grow/shrink right or bottom edge."""
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        key = faces[self._sdbg_idx % len(faces)]
+        s = self._sdbg_step; r = self._sdbg_regs[key]
+        r[2] += dw*s; r[3] += dh*s
+        self._sdbg_rebuild_tex(key); self._sdbg_update_hud()
+
+    def _sdbg_stretch_w(self, d):
+        """[: shrink width,  ]: expand width — moves left and right edges symmetrically."""
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        key = faces[self._sdbg_idx % len(faces)]
+        s = self._sdbg_step; r = self._sdbg_regs[key]
+        r[0] -= d*s; r[2] += d*s
+        self._sdbg_rebuild_tex(key); self._sdbg_update_hud()
+
+    def _sdbg_stretch_h(self, d):
+        """,: shrink height,  .: expand height — moves top and bottom edges symmetrically."""
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        key = faces[self._sdbg_idx % len(faces)]
+        s = self._sdbg_step; r = self._sdbg_regs[key]
+        r[1] -= d*s; r[3] += d*s
+        self._sdbg_rebuild_tex(key); self._sdbg_update_hud()
+
+    def _sdbg_step_sz(self, d):
+        self._sdbg_step = max(1, self._sdbg_step + d)
+        self._sdbg_update_hud()
+
+    def _sdbg_do_zoom(self, d):
+        """+=zoom in (shrink crop), -=zoom out (expand crop), d=+1 or -1."""
+        faces = [f[0] for f in self._SHIRT_DBG_FACES]
+        key = faces[self._sdbg_idx % len(faces)]
+        s = self._sdbg_step; r = self._sdbg_regs[key]
+        r[0] += d*s; r[1] += d*s; r[2] -= d*s; r[3] -= d*s
+        self._sdbg_rebuild_tex(key); self._sdbg_update_hud()
+
+    def _sdbg_toggle_arms(self):
+        """DEL: spread arms to T-pose so torso faces are visible; press again to reset."""
+        self._sdbg_arms_out = not getattr(self, '_sdbg_arms_out', False)
+        r_pivot = getattr(self, 'right_arm_pivot', None)
+        l_pivot = getattr(self, 'left_arm_pivot', None)
+        if self._sdbg_arms_out:
+            if r_pivot: r_pivot.setR(-90)
+            if l_pivot: l_pivot.setR( 90)
+        else:
+            if r_pivot: r_pivot.setR(0)
+            if l_pivot: l_pivot.setR(0)
+
+    def _sdbg_print(self):
+        print('\n=== SHIRT DEBUG REGIONS (copy into _SHIRT_REGIONS) ===', flush=True)
+        for k, v in self._sdbg_regs.items():
+            print(f'    "{k}": ({v[0]}, {v[1]}, {v[2]}, {v[3]}),', flush=True)
+        print('======================================================\n', flush=True)
+
+    # ── Pants UV debug mode ─────────────────────────────────────────────────
+    _PANTS_DBG_FACES = [
+        ('torso_front','character',       ( 0,     0.52,  2),(-1, 1, 0,  2),(180,0,0)),
+        ('torso_back', 'character',       ( 0,    -0.52,  2),(-1, 1, 0,  2),(  0,0,0)),
+        ('torso_right','character',       ( 1.02,  0,     2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('torso_left', 'character',       (-1.02,  0,     2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('torso_up',   'character',       ( 0,     0,  4.02),(-1,1,-0.5,0.5),(0,-90,0)),
+        ('torso_down', 'character',       ( 0,     0,  1.98),(-1,1,-0.5,0.5),(0, 90,0)),
+        ('rleg_front', 'right_leg_pivot', ( 0,     0.52, -2),(-0.5,0.5,0,2),(180,0,0)),
+        ('rleg_back',  'right_leg_pivot', ( 0,    -0.52, -2),(-0.5,0.5,0,2),(  0,0,0)),
+        ('rleg_right', 'right_leg_pivot', ( 0.52,  0,    -2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('rleg_left',  'right_leg_pivot', (-0.52,  0,    -2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('rleg_up',    'right_leg_pivot', ( 0,     0,  0.02),(-0.5,0.5,-0.5,0.5),(0,-90,0)),
+        ('rleg_down',  'right_leg_pivot', ( 0,     0, -2.02),(-0.5,0.5,-0.5,0.5),(0, 90,0)),
+        ('lleg_front', 'left_leg_pivot',  ( 0,     0.52, -2),(-0.5,0.5,0,2),(180,0,0)),
+        ('lleg_back',  'left_leg_pivot',  ( 0,    -0.52, -2),(-0.5,0.5,0,2),(  0,0,0)),
+        ('lleg_right', 'left_leg_pivot',  ( 0.52,  0,    -2),(-0.5,0.5,0,2),(-90,0,0)),
+        ('lleg_left',  'left_leg_pivot',  (-0.52,  0,    -2),(-0.5,0.5,0,2),( 90,0,0)),
+        ('lleg_up',    'left_leg_pivot',  ( 0,     0,  0.02),(-0.5,0.5,-0.5,0.5),(0,-90,0)),
+        ('lleg_down',  'left_leg_pivot',  ( 0,     0, -2.02),(-0.5,0.5,-0.5,0.5),(0, 90,0)),
+    ]
+
+    def start_pants_debug(self, image_b64):
+        """Pants UV debug mode — same controls as shirt debug (F9 to exit)."""
+        self.stop_pants_debug()
+        self.remove_pants()
+        if '|PANTSDATA|' in image_b64:
+            image_b64 = image_b64.split('|PANTSDATA|')[0]
+        try:
+            from PIL import Image as _PIL
+            import base64, io as _io
+            from panda3d.core import PNMImage, StringStream, Texture
+            from direct.gui.OnscreenText import OnscreenText
+            from panda3d.core import TextNode as _TN
+
+            raw   = base64.b64decode(image_b64)
+            tmpl  = _PIL.open(_io.BytesIO(raw)).convert("RGBA")
+            if tmpl.size != (585, 559):
+                tmpl = tmpl.resize((585, 559), _PIL.LANCZOS)
+
+            self._pdbg_tmpl  = tmpl
+            self._pdbg_raw   = image_b64
+            self._pdbg_regs  = {k: list(v) for k, v in self._PANTS_REGIONS.items()}
+            self._pdbg_idx   = 0
+            self._pdbg_step  = 2
+            self._pdbg_cards = {}
+
+            for (key, par_attr, pos, frame, hpr) in self._PANTS_DBG_FACES:
+                parent = getattr(self, par_attr, None)
+                if not parent: continue
+                from panda3d.core import CardMaker, TransparencyAttrib
+                cm = CardMaker(f'pdbg_{key}'); cm.setFrame(*frame)
+                anchor = parent.attachNewNode(f'pdbg_a_{key}'); anchor.setPos(*pos)
+                card   = anchor.attachNewNode(cm.generate()); card.setHpr(*hpr)
+                card.setTransparency(TransparencyAttrib.MAlpha)
+                card.setShaderOff(); card.setLightOff()
+                card.setDepthOffset(3); card.setDepthWrite(False)
+                card.setTwoSided(True)
+                self._pdbg_cards[key] = (anchor, card)
+                self._pdbg_rebuild_tex(key)
+
+            self._pdbg_lbl_face = OnscreenText(
+                text='', pos=(-1.55, 0.92), scale=0.042,
+                fg=(1, 1, 0.2, 1), align=_TN.ALeft, mayChange=True)
+            self._pdbg_lbl_coord = OnscreenText(
+                text='', pos=(-1.55, 0.80), scale=0.048,
+                fg=(0.3, 1, 0.3, 1), align=_TN.ALeft, mayChange=True)
+            self._pdbg_lbl_hint = OnscreenText(
+                text='Tab/Shift-Tab: cycle   Arrows: move   Shift+Arrows: resize   +/-: zoom\n'
+                     '[/]: width   ,/.: height   Z/X: speed   E: spread legs   P: print   F9: exit',
+                pos=(-1.55, 0.65), scale=0.034,
+                fg=(0.8, 0.8, 1, 1), align=_TN.ALeft, mayChange=False)
+
+            self.accept('tab',               self._pdbg_cycle,       [ 1])
+            self.accept('shift-tab',         self._pdbg_cycle,       [-1])
+            self.accept('arrow_left',        self._pdbg_move,        [-1,  0])
+            self.accept('arrow_right',       self._pdbg_move,        [ 1,  0])
+            self.accept('arrow_up',          self._pdbg_move,        [ 0, -1])
+            self.accept('arrow_down',        self._pdbg_move,        [ 0,  1])
+            self.accept('shift-arrow_left',  self._pdbg_resize,      [-1,  0])
+            self.accept('shift-arrow_right', self._pdbg_resize,      [ 1,  0])
+            self.accept('shift-arrow_up',    self._pdbg_resize,      [ 0, -1])
+            self.accept('shift-arrow_down',  self._pdbg_resize,      [ 0,  1])
+            self.accept('[',                 self._pdbg_stretch_w,   [-1])
+            self.accept(']',                 self._pdbg_stretch_w,   [ 1])
+            self.accept(',',                 self._pdbg_stretch_h,   [-1])
+            self.accept('.',                 self._pdbg_stretch_h,   [ 1])
+            self.accept('=',                 self._pdbg_do_zoom,     [ 1])
+            self.accept('-',                 self._pdbg_do_zoom,     [-1])
+            self.accept('z',                 self._pdbg_step_sz,     [ 1])
+            self.accept('x',                 self._pdbg_step_sz,     [-1])
+            self.accept('p',                 self._pdbg_print)
+            self.accept('e',                 self._pdbg_toggle_legs)
+            self.accept('f9',                self.stop_pants_debug)
+
+            self._pdbg_update_hud()
+            print('[PANTS_DBG] started', flush=True)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            print(f'[PANTS_DBG] start error: {e}', flush=True)
+
+    def stop_pants_debug(self):
+        for attr in ('_pdbg_lbl_face', '_pdbg_lbl_coord', '_pdbg_lbl_hint'):
+            w = getattr(self, attr, None)
+            if w:
+                try: w.destroy()
+                except Exception: pass
+            setattr(self, attr, None)
+        for key, (anchor, _) in getattr(self, '_pdbg_cards', {}).items():
+            if anchor and not anchor.isEmpty(): anchor.removeNode()
+        self._pdbg_cards = {}
+        for ev in ('tab','shift-tab','arrow_left','arrow_right','arrow_up','arrow_down',
+                   'shift-arrow_left','shift-arrow_right','shift-arrow_up','shift-arrow_down',
+                   '[',']',',','.','=','-','z','x','e','p','f9'):
+            self.ignore(ev)
+        if getattr(self, '_pdbg_legs_out', False):
+            self._pdbg_legs_out = False
+            for piv in (getattr(self,'right_leg_pivot',None), getattr(self,'left_leg_pivot',None)):
+                if piv: piv.setP(0); piv.setR(0)
+        self._pdbg_tmpl = None
+        print('[PANTS_DBG] stopped', flush=True)
+
+    def _pdbg_rebuild_tex(self, key):
+        if key not in getattr(self, '_pdbg_cards', {}): return
+        _, card = self._pdbg_cards[key]
+        tmpl = getattr(self, '_pdbg_tmpl', None)
+        if tmpl is None: return
+        try:
+            from PIL import Image as _PIL
+            import base64, io as _io
+            from panda3d.core import PNMImage, StringStream, Texture
+            r = self._pdbg_regs[key]
+            x0,y0,x1,y1 = int(r[0]),int(r[1]),int(r[2]),int(r[3])
+            w = max(1, abs(x1-x0)); h = max(1, abs(y1-y0))
+            crop = tmpl.crop((min(x0,x1),min(y0,y1),min(x0,x1)+w,min(y0,y1)+h))
+            buf = _io.BytesIO(); crop.save(buf, "PNG")
+            raw = buf.getvalue()
+            ss = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss): return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            card.setTexture(tex, 1)
+        except Exception as e:
+            print(f'[PANTS_DBG] rebuild_tex {key}: {e}', flush=True)
+
+    def _pdbg_update_hud(self):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        idx = self._pdbg_idx % len(faces); key = faces[idx]
+        step = self._pdbg_step; reg = self._pdbg_regs[key]
+        lf = getattr(self, '_pdbg_lbl_face', None)
+        lc = getattr(self, '_pdbg_lbl_coord', None)
+        if lf: lf.setText(f'Face {idx+1}/{len(faces)}: {key}   step={step}px')
+        if lc: lc.setText(f'({reg[0]}, {reg[1]}, {reg[2]}, {reg[3]})')
+        for k, (_, card) in self._pdbg_cards.items():
+            card.setColorScale((1, 1, 0.1, 1) if k == key else (1, 1, 1, 1))
+
+    def _pdbg_cycle(self, d):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        self._pdbg_idx = (self._pdbg_idx + d) % len(faces)
+        self._pdbg_update_hud()
+
+    def _pdbg_move(self, dx, dy):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        key = faces[self._pdbg_idx % len(faces)]
+        s = self._pdbg_step; r = self._pdbg_regs[key]
+        r[0] += dx*s; r[2] += dx*s; r[1] += dy*s; r[3] += dy*s
+        self._pdbg_rebuild_tex(key); self._pdbg_update_hud()
+
+    def _pdbg_resize(self, dw, dh):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        key = faces[self._pdbg_idx % len(faces)]
+        s = self._pdbg_step; r = self._pdbg_regs[key]
+        r[2] += dw*s; r[3] += dh*s
+        self._pdbg_rebuild_tex(key); self._pdbg_update_hud()
+
+    def _pdbg_stretch_w(self, d):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        key = faces[self._pdbg_idx % len(faces)]
+        s = self._pdbg_step; r = self._pdbg_regs[key]
+        r[0] -= d*s; r[2] += d*s
+        self._pdbg_rebuild_tex(key); self._pdbg_update_hud()
+
+    def _pdbg_stretch_h(self, d):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        key = faces[self._pdbg_idx % len(faces)]
+        s = self._pdbg_step; r = self._pdbg_regs[key]
+        r[1] -= d*s; r[3] += d*s
+        self._pdbg_rebuild_tex(key); self._pdbg_update_hud()
+
+    def _pdbg_step_sz(self, d):
+        self._pdbg_step = max(1, self._pdbg_step + d)
+        self._pdbg_update_hud()
+
+    def _pdbg_do_zoom(self, d):
+        faces = [f[0] for f in self._PANTS_DBG_FACES]
+        key = faces[self._pdbg_idx % len(faces)]
+        s = self._pdbg_step; r = self._pdbg_regs[key]
+        r[0] += d*s; r[1] += d*s; r[2] -= d*s; r[3] -= d*s
+        self._pdbg_rebuild_tex(key); self._pdbg_update_hud()
+
+    def _pdbg_toggle_legs(self):
+        """E: roll legs out to sides so side/back faces are visible; press again to reset."""
+        self._pdbg_legs_out = not getattr(self, '_pdbg_legs_out', False)
+        r_piv = getattr(self, 'right_leg_pivot', None)
+        l_piv = getattr(self, 'left_leg_pivot', None)
+        if self._pdbg_legs_out:
+            if r_piv: r_piv.setR(-90)
+            if l_piv: l_piv.setR( 90)
+        else:
+            if r_piv: r_piv.setR(0)
+            if l_piv: l_piv.setR(0)
+
+    def _pdbg_print(self):
+        print('\n=== PANTS DEBUG REGIONS (copy into _PANTS_REGIONS) ===', flush=True)
+        for k, v in self._pdbg_regs.items():
+            print(f'    "{k}": ({v[0]}, {v[1]}, {v[2]}, {v[3]}),', flush=True)
+        print('======================================================\n', flush=True)
 
     def apply_hat(self, hat_data_json):
         """Load a hat from server hat_data JSON and attach it (follows head each frame)."""
@@ -447,14 +1154,13 @@ class CharacterMixin:
             # User-applied texture overrides any MTL texture
             tex_b64 = data.get("texture_b64")
             if tex_b64:
+                from panda3d.core import PNMImage, StringStream, Texture
                 raw = base64.b64decode(tex_b64)
-                tex_tmp = _os.path.join(tempfile.gettempdir(), "phx_hat_tex.png")
-                with open(tex_tmp, 'wb') as f:
-                    f.write(raw)
-                tex = self.loader.loadTexture(Filename.fromOsSpecific(tex_tmp))
-                try: _os.unlink(tex_tmp)
-                except Exception: pass
-                if tex:
+                ss  = StringStream(raw)
+                pnm = PNMImage()
+                if pnm.read(ss):
+                    tex = Texture()
+                    tex.load(pnm)
                     hat_model.setTexture(tex, 1)
 
             bs = data.get("brick_scale", [2, 2, 2])
@@ -490,6 +1196,10 @@ class CharacterMixin:
         m = getattr(self, '_equipped_hat_model', None)
         if not m or m.isEmpty():
             return Task.done
+        if not self.is_playtest:
+            m.hide()
+            return Task.cont
+        m.show()
         hp = self.head.getPos(self.render)
         z  = getattr(self, '_equipped_hat_z_off', 0.0)
         m.setPos(hp.x, hp.y, hp.z + 0.55 + z)

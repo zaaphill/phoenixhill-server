@@ -844,6 +844,26 @@ async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
                     "player_id": player_id,
                     "item_id": item_id,
                 }, exclude=player_id)
+            elif msg.get("type") == "equip_shirt":
+                item_id = msg.get("item_id")
+                entry = _rooms.get(build_id, {}).get(player_id)
+                if entry:
+                    entry["shirt_id"] = item_id
+                await _broadcast(build_id, {
+                    "type": "equip_shirt",
+                    "player_id": player_id,
+                    "item_id": item_id,
+                }, exclude=player_id)
+            elif msg.get("type") == "equip_pants":
+                item_id = msg.get("item_id")
+                entry = _rooms.get(build_id, {}).get(player_id)
+                if entry:
+                    entry["pants_id"] = item_id
+                await _broadcast(build_id, {
+                    "type": "equip_pants",
+                    "player_id": player_id,
+                    "item_id": item_id,
+                }, exclude=player_id)
     except WebSocketDisconnect as _wd:
         code = getattr(_wd, "code", "?")
         print(f"[WS] {username}: clean disconnect (code={code}, room {build_id})", flush=True)

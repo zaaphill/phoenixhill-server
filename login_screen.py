@@ -64,12 +64,12 @@ _PAGE_SIZE  = 15     # 5 cols × 3 rows
 
 # ── Shop screen layout constants ───────────────────────────────────────────
 _SHOP_COLS  = 6
-_SHOP_CW    = 0.44   # card full width
-_SHOP_CTH   = 0.44   # thumbnail full height (square = same as width)
-_SHOP_CIH   = 0.15   # info area full height
-_SHOP_CH    = 0.59   # total card full height
+_SHOP_CW    = 0.34   # card full width
+_SHOP_CTH   = 0.34   # thumbnail full height (square, same as width)
+_SHOP_CIH   = 0.13   # info area full height
+_SHOP_CH    = 0.47   # total card full height (3 rows fit above pagination)
 _SHOP_GAPX  = 0.03
-_SHOP_GAPY  = 0.04
+_SHOP_GAPY  = 0.03
 _SHOP_PAGE  = 18     # 6 × 3
 
 
@@ -85,9 +85,27 @@ class LoginScreenMixin:
         return "|HATDATA|" in (item.get("image_data") or "")
 
     @staticmethod
+    def _item_is_shirt(item):
+        return "|SHIRTDATA|" in (item.get("image_data") or "")
+
+    @staticmethod
+    def _item_is_pants(item):
+        return "|PANTSDATA|" in (item.get("image_data") or "")
+
+    @staticmethod
+    def _item_shirt_b64(item):
+        """Return the raw template base64, stripped of the |SHIRTDATA| marker."""
+        img = item.get("image_data") or ""
+        return img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+
+    @staticmethod
     def _item_thumbnail(item):
         img = item.get("image_data") or ""
-        return img.split("|HATDATA|")[0] if "|HATDATA|" in img else img
+        if "|HATDATA|" in img:
+            return img.split("|HATDATA|")[0]
+        if "|SHIRTDATA|" in img:
+            return img.split("|SHIRTDATA|")[0]
+        return img
 
     @staticmethod
     def _item_hat_data_json(item):
@@ -346,6 +364,11 @@ class LoginScreenMixin:
             self._equipped_tshirt_id = int(equipped) if equipped is not None else None
             eq_hat = (av_res or {}).get("equipped_hat")
             self._equipped_hat_id = int(eq_hat) if eq_hat is not None else None
+            eq_shirt = (av_res or {}).get("equipped_shirt")
+            self._equipped_shirt_id = int(eq_shirt) if eq_shirt is not None else None
+            print(f"[SHIRT_DBG] _sync_avatar: server equipped_shirt={eq_shirt} -> _equipped_shirt_id={self._equipped_shirt_id}", flush=True)
+            eq_pants = (av_res or {}).get("equipped_pants")
+            self._equipped_pants_id = int(eq_pants) if eq_pants is not None else None
             local = self.load_avatar_colors(username)
             if server_colors and isinstance(server_colors, dict):
                 for part in list(local.keys()):
@@ -360,12 +383,16 @@ class LoginScreenMixin:
             print(f"[Avatar] server sync: {e}")
 
     def _apply_equipped_items_bg(self):
-        """Background-fetch equipped tshirt/hat data and apply them to the character."""
+        """Background-fetch equipped tshirt/hat/shirt data and apply them to the character."""
         import auth_client as _ac
         equipped_tshirt = getattr(self, '_equipped_tshirt_id', None)
         equipped_hat    = getattr(self, '_equipped_hat_id',    None)
+        equipped_shirt  = getattr(self, '_equipped_shirt_id',  None)
 
-        def worker(ts_id=equipped_tshirt, hat_id=equipped_hat):
+        equipped_pants  = getattr(self, '_equipped_pants_id',  None)
+        print(f"[SHIRT_DBG] _apply_equipped_items_bg: sh_id={equipped_shirt}", flush=True)
+        def worker(ts_id=equipped_tshirt, hat_id=equipped_hat, sh_id=equipped_shirt, pt_id=equipped_pants):
+            print(f"[SHIRT_DBG] worker thread: sh_id={sh_id}", flush=True)
             if ts_id:
                 full, _ = _ac.get_shop_item(ts_id)
                 if full and full.get("image_data"):
@@ -377,13 +404,34 @@ class LoginScreenMixin:
                     self.taskMgr.doMethodLater(0, _apply_ts, "_loginApplyTshirt", appendTask=True)
             if hat_id:
                 full, _ = _ac.get_shop_item(hat_id)
-                if full and full.get("hat_data"):
-                    hd = full["hat_data"]
+                hd = self._item_hat_data_json(full) if full else None
+                if hd:
                     def _apply_hat(task, _hd=hd):
                         if hasattr(self, "apply_hat"):
                             self.apply_hat(_hd)
                         return task.done
                     self.taskMgr.doMethodLater(0, _apply_hat, "_loginApplyHat", appendTask=True)
+            if sh_id:
+                full, _ = _ac.get_shop_item(sh_id)
+                print(f"[SHIRT_DBG] get_shop_item({sh_id}): found={full is not None}, has_image={bool((full or {}).get('image_data'))}", flush=True)
+                if full and full.get("image_data"):
+                    img = full["image_data"]
+                    b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+                    def _apply_sh(task, _b=b64):
+                        if hasattr(self, "apply_shirt"):
+                            self.apply_shirt(_b)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply_sh, "_loginApplyShirt", appendTask=True)
+            if pt_id:
+                full, _ = _ac.get_shop_item(pt_id)
+                if full and full.get("image_data"):
+                    img = full["image_data"]
+                    b64 = img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in img else img
+                    def _apply_pt(task, _b=b64):
+                        if hasattr(self, "apply_pants"):
+                            self.apply_pants(_b)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply_pt, "_loginApplyPants", appendTask=True)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -781,6 +829,22 @@ class LoginScreenMixin:
             frameSize=(-0.130, 0.130, -0.030, 0.030),
             parent=bg, pos=(1.55, 0, 0.690),
             command=self._show_upload_tshirt_dialog, relief=1,
+        )
+        DirectButton(
+            text="Upload Shirt",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.130, 0.130, -0.030, 0.030),
+            parent=bg, pos=(1.55, 0, 0.642),
+            command=self._show_upload_shirt_dialog, relief=1,
+        )
+        DirectButton(
+            text="Upload Pants",
+            text_fg=_RS_WHITE, text_scale=0.026,
+            frameColor=_RS_BORDER,
+            frameSize=(-0.130, 0.130, -0.030, 0.030),
+            parent=bg, pos=(1.55, 0, 0.594),
+            command=self._show_upload_pants_dialog, relief=1,
         )
         # ── Build list ──────────────────────────────────────────────────────
         self._build_list_frame = DirectFrame(
@@ -1220,7 +1284,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.038, 0.038),
             parent=bg, pos=(0, 0, 0.802),
         )
-        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Hats", "hat")]):
+        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Hats", "hat"), ("Shirts", "shirt"), ("Pants", "pants")]):
             is_on = (cat_val == self._shop_cat_filter)
             def _make_cat_cmd(v):
                 def _cmd():
@@ -1233,7 +1297,7 @@ class LoginScreenMixin:
                 frameColor=_TAB_ON if is_on else _TAB_OFF,
                 frameSize=(-0.100, 0.100, -0.028, 0.028),
                 parent=bg,
-                pos=(-0.34 + ci * 0.36, 0, 0.800),
+                pos=(-0.72 + ci * 0.36, 0, 0.800),
                 relief=1,
                 command=_make_cat_cmd(cat_val),
             )
@@ -1253,27 +1317,33 @@ class LoginScreenMixin:
         )
 
         # ── Pagination ──────────────────────────────────────────────────
-        DirectButton(
+        self._shop_page = 0
+        _DIM = (0.40, 0.35, 0.55, 1.0)
+        self._shop_prev_btn = DirectButton(
             text="< Prev",
             text_fg=_RS_WHITE, text_scale=0.030,
-            frameColor=_RS_NAV,
+            frameColor=_DIM,
             frameSize=(-0.070, 0.070, -0.034, 0.034),
             parent=bg, pos=(-0.24, 0, -0.913),
             relief=1,
+            command=self._shop_goto_page,
+            extraArgs=[-1],
         )
-        DirectLabel(
+        self._shop_page_lbl = DirectLabel(
             text="Page 1",
             text_fg=_RS_GRAY, text_scale=0.030,
             frameColor=(0, 0, 0, 0),
             parent=bg, pos=(0, 0, -0.913),
         )
-        DirectButton(
+        self._shop_next_btn = DirectButton(
             text="Next >",
             text_fg=_RS_WHITE, text_scale=0.030,
-            frameColor=_RS_NAV,
+            frameColor=_DIM,
             frameSize=(-0.070, 0.070, -0.034, 0.034),
             parent=bg, pos=(0.24, 0, -0.913),
             relief=1,
+            command=self._shop_goto_page,
+            extraArgs=[+1],
         )
 
         threading.Thread(target=self._fetch_shop_items_thread, daemon=True).start()
@@ -1286,8 +1356,14 @@ class LoginScreenMixin:
             items = all_items
         elif cat == "hat":
             items = [it for it in all_items if self._item_is_hat(it)]
+        elif cat == "shirt":
+            items = [it for it in all_items if self._item_is_shirt(it)]
+        elif cat == "pants":
+            items = [it for it in all_items if self._item_is_pants(it)]
         else:
-            items = [it for it in all_items if not self._item_is_hat(it)]
+            items = [it for it in all_items if not self._item_is_hat(it)
+                     and not self._item_is_shirt(it)
+                     and not self._item_is_pants(it)]
         owned_result, _ = auth_client.get_owned_items(self._session_token)
         owned = {it["id"] for it in (owned_result or {}).get("items", [])}
         self.taskMgr.doMethodLater(
@@ -1296,8 +1372,20 @@ class LoginScreenMixin:
         )
 
     def _render_shop_thumbnails(self, items, buf_w=300, buf_h=173):
-        """RTT-render one avatar+tshirt frame per item; returns {item_id: Texture}."""
-        items_with_img = [(it["id"], it["image_data"]) for it in items if it.get("image_data")]
+        """RTT-render one avatar+tshirt/shirt frame per item; returns {item_id: Texture}."""
+        items_with_img = []
+        for it in items:
+            img = it.get("image_data", "")
+            if not img:
+                continue
+            if "|SHIRTDATA|" in img:
+                b64 = img.split("|SHIRTDATA|")[0]
+                items_with_img.append((it["id"], b64, "shirt"))
+            elif "|PANTSDATA|" in img:
+                b64 = img.split("|PANTSDATA|")[0]
+                items_with_img.append((it["id"], b64, "pants"))
+            else:
+                items_with_img.append((it["id"], img, "tshirt"))
         if not items_with_img:
             return {}
 
@@ -1416,8 +1504,78 @@ class LoginScreenMixin:
         self.graphicsEngine.renderFrame()
 
         # ── Render each item ───────────────────────────────────────────────────
-        for item_id, image_b64 in items_with_img:
-            _swap_tshirt(image_b64)
+        shirt_nodes = []
+        R = self._SHIRT_REGIONS
+
+        def _swap_shirt(image_b64):
+            nonlocal shirt_nodes
+            for n in shirt_nodes:
+                if n and not n.isEmpty(): n.removeNode()
+            shirt_nodes = []
+            import base64 as _sb64
+            raw = _sb64.b64decode(image_b64)
+            ss = StringStream(raw); pnm2 = PNMImage()
+            if not pnm2.read(ss): return
+            tex2 = Texture(); tex2.load(pnm2)
+            tex2.setMagfilter(Texture.FTLinear); tex2.setMinfilter(Texture.FTLinear)
+            def sa(parent, reg_map, w, d, h, pos):
+                node = self._make_shirt_box_geom(w, d, h, reg_map)
+                np2 = parent.attachNewNode(node)
+                np2.setPos(*pos); np2.setTexture(tex2)
+                np2.setTwoSided(True); np2.setShaderOff()
+                np2.setDepthOffset(1); np2.setTransparency(TransparencyAttrib.MAlpha)
+                np2.show(PMASK); return np2
+            # Thumbnail camera looks from -Y so front/back are flipped vs in-game camera (+Y)
+            shirt_nodes.append(sa(rig,{'front':R['torso_back'],'back':R['torso_front'],
+                'left':R['torso_right'],'right':R['torso_left'],
+                'top':R['torso_up'],'bottom':R['torso_down']},2,1,2,(-1,-0.5,2)))
+            shirt_nodes.append(sa(ra,{'front':R['rarm_back'],'back':R['rarm_front'],
+                'left':R['rarm_right'],'right':R['rarm_left'],
+                'top':R['rarm_up'],'bottom':R['rarm_down']},1,1,2,(-0.5,-0.5,-2)))
+            shirt_nodes.append(sa(la,{'front':R['larm_back'],'back':R['larm_front'],
+                'left':R['larm_right'],'right':R['larm_left'],
+                'top':R['larm_up'],'bottom':R['larm_down']},1,1,2,(-0.5,-0.5,-2)))
+
+        pants_nodes = []
+        PR = self._PANTS_REGIONS
+
+        def _swap_pants(image_b64):
+            nonlocal pants_nodes
+            for n in pants_nodes:
+                if n and not n.isEmpty(): n.removeNode()
+            pants_nodes = []
+            import base64 as _pb64
+            raw = _pb64.b64decode(image_b64)
+            ss = StringStream(raw); pnm2 = PNMImage()
+            if not pnm2.read(ss): return
+            tex2 = Texture(); tex2.load(pnm2)
+            tex2.setMagfilter(Texture.FTLinear); tex2.setMinfilter(Texture.FTLinear)
+            def pa(parent, reg_map, w, d, h, pos):
+                node = self._make_shirt_box_geom(w, d, h, reg_map,
+                    template_w=self._PANTS_TEMPLATE_W, template_h=self._PANTS_TEMPLATE_H)
+                np2 = parent.attachNewNode(node)
+                np2.setPos(*pos); np2.setTexture(tex2)
+                np2.setTwoSided(True); np2.setShaderOff()
+                np2.setDepthOffset(1); np2.setTransparency(TransparencyAttrib.MAlpha)
+                np2.show(PMASK); return np2
+            # Thumbnail camera at -Y: swap front/back and left/right
+            pants_nodes.append(pa(rig,{'front':PR['torso_back'],'back':PR['torso_front'],
+                'left':PR['torso_right'],'right':PR['torso_left'],
+                'top':PR['torso_up'],'bottom':PR['torso_down']},2,1,2,(-1,-0.5,2)))
+            pants_nodes.append(pa(rl,{'front':PR['rleg_back'],'back':PR['rleg_front'],
+                'left':PR['rleg_right'],'right':PR['rleg_left'],
+                'top':PR['rleg_up'],'bottom':PR['rleg_down']},1,1,2,(-0.5,-0.5,-2)))
+            pants_nodes.append(pa(ll,{'front':PR['lleg_back'],'back':PR['lleg_front'],
+                'left':PR['lleg_right'],'right':PR['lleg_left'],
+                'top':PR['lleg_up'],'bottom':PR['lleg_down']},1,1,2,(-0.5,-0.5,-2)))
+
+        for item_id, image_b64, kind in items_with_img:
+            if kind == "shirt":
+                _swap_shirt(image_b64)
+            elif kind == "pants":
+                _swap_pants(image_b64)
+            else:
+                _swap_tshirt(image_b64)
             self.graphicsEngine.renderFrame()
             # extractTextureData forces GPU→CPU readback so store() succeeds.
             rtex = buf.getTexture()
@@ -1426,6 +1584,8 @@ class LoginScreenMixin:
             if rtex.store(pnm):
                 out_tex = Texture()
                 out_tex.load(pnm)
+                out_tex.setMagfilter(Texture.FTLinear)
+                out_tex.setMinfilter(Texture.FTLinearMipmapLinear)
                 result[item_id] = out_tex
             else:
                 print(f"[SHOP_THUMB] store failed for item {item_id}", flush=True)
@@ -1433,11 +1593,134 @@ class LoginScreenMixin:
         # ── Cleanup ────────────────────────────────────────────────────────────
         if tshirt_anchor[0] and not tshirt_anchor[0].isEmpty():
             tshirt_anchor[0].removeNode()
+        for n in shirt_nodes:
+            if n and not n.isEmpty(): n.removeNode()
+        for n in pants_nodes:
+            if n and not n.isEmpty(): n.removeNode()
         self.graphicsEngine.removeWindow(buf)
         cam_np.removeNode()
         rig.removeNode()
         self.camNode.setCameraMask(orig_mask)
 
+        return result
+
+    def _render_shirt_thumbnails(self, items, buf_w=512, buf_h=512):
+        """RTT-render one avatar+shirt frame per item; returns {item_id: Texture}."""
+        import base64 as _b64
+        items_with_img = []
+        for it in items:
+            img = it.get("image_data", "")
+            if img:
+                b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+                items_with_img.append((it["id"], b64))
+        if not items_with_img:
+            return {}
+
+        result = {}
+        # Use the same camera mask bit as tshirts (bit 6) — same isolation, same rig Y offset avoids overlap
+        PMASK  = BitMask32.bit(6)
+        BUF_W, BUF_H = buf_w, buf_h
+        _DEFAULTS = {
+            "head":      (244/255, 204/255,  67/255, 1),
+            "torso":     ( 23/255, 107/255, 170/255, 1),
+            "left_arm":  (244/255, 204/255,  67/255, 1),
+            "right_arm": (244/255, 204/255,  67/255, 1),
+            "left_leg":  (165/255, 188/255,  80/255, 1),
+            "right_leg": (165/255, 188/255,  80/255, 1),
+        }
+        colors = getattr(self, "_avatar_colors", None) or self.load_avatar_colors()
+
+        rig = self.render.attachNewNode("shirt_thumb_root")
+        rig.setPos(0, 3000, 0)
+
+        def box(parent, scale, pos, key):
+            m = self.loader.loadModel("models/box")
+            m.reparentTo(parent); m.setScale(*scale); m.setPos(*pos)
+            m.setColor(*colors.get(key, _DEFAULTS[key])); m.setTextureOff(1); m.show(PMASK)
+            return m
+
+        box(rig, (2, 1, 2), (-1, -0.5, 2), "torso")
+        la = rig.attachNewNode("la"); la.setPos(-1.5, 0, 4)
+        box(la, (1, 1, 2), (-0.5, -0.5, -2), "left_arm")
+        ra = rig.attachNewNode("ra"); ra.setPos(1.5, 0, 4)
+        box(ra, (1, 1, 2), (-0.5, -0.5, -2), "right_arm")
+        ll = rig.attachNewNode("ll"); ll.setPos(-0.5, 0, 2)
+        box(ll, (1, 1, 2), (-0.5, -0.5, -2), "left_leg")
+        rl = rig.attachNewNode("rl"); rl.setPos(0.5, 0, 2)
+        box(rl, (1, 1, 2), (-0.5, -0.5, -2), "right_leg")
+        head = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+        head.reparentTo(rig); head.setColor(*colors.get("head", _DEFAULTS["head"]))
+        head.setTwoSided(True); head.setTextureOff(1); head.setPos(0, 0, 4.55); head.show(PMASK)
+
+        al = AmbientLight("sh_al"); al.setColor(LColor(0.22, 0.22, 0.25, 1))
+        rig.setLight(rig.attachNewNode(al))
+        dl = DirectionalLight("sh_dl"); dl.setColor(LColor(0.50, 0.50, 0.52, 1))
+        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20, 15, 0); rig.setLight(dlnp)
+
+        shirt_nodes = [[]]
+        R = self._SHIRT_REGIONS
+
+        def _swap_shirt(image_b64):
+            for n in shirt_nodes[0]:
+                if n and not n.isEmpty(): n.removeNode()
+            shirt_nodes[0] = []
+            raw = _b64.b64decode(image_b64)
+            ss = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss):
+                print("[SHIRT_THUMB] PNMImage read failed", flush=True); return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            nodes = []
+            def attach(parent, reg_map, w, d, h, pos):
+                node = self._make_shirt_box_geom(w, d, h, reg_map)
+                np = parent.attachNewNode(node)
+                np.setPos(*pos); np.setTexture(tex)
+                np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(1); np.setTransparency(TransparencyAttrib.MAlpha)
+                np.show(PMASK); return np
+            nodes.append(attach(rig, {'front':R['torso_front'],'back':R['torso_back'],
+                'left':R['torso_left'],'right':R['torso_right'],
+                'top':R['torso_up'],'bottom':R['torso_down']}, 2, 1, 2, (-1,-0.5,2)))
+            nodes.append(attach(ra, {'front':R['rarm_front'],'back':R['rarm_back'],
+                'left':R['rarm_left'],'right':R['rarm_right'],
+                'top':R['rarm_up'],'bottom':R['rarm_down']}, 1, 1, 2, (-0.5,-0.5,-2)))
+            nodes.append(attach(la, {'front':R['larm_front'],'back':R['larm_back'],
+                'left':R['larm_left'],'right':R['larm_right'],
+                'top':R['larm_up'],'bottom':R['larm_down']}, 1, 1, 2, (-0.5,-0.5,-2)))
+            shirt_nodes[0] = nodes
+
+        buf = self.win.makeTextureBuffer("shirt_thumb_buf", BUF_W, BUF_H)
+        buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0)); buf.setClearColorActive(True)
+        _camNode = Camera("shirt_thumb_cam")
+        _lens = PerspectiveLens(); _lens.setFov(32.0)
+        _lens.setAspectRatio(BUF_W / BUF_H); _lens.setNearFar(0.1, 10000)
+        _camNode.setLens(_lens); _camNode.setCameraMask(PMASK)
+        cam_np = self.render.attachNewNode(_camNode)
+        cam_np.setPos(0, 4000 - 12, 3.3); cam_np.lookAt(Point3(0, 4000, 3.3))
+        _dr = buf.makeDisplayRegion(0, 1, 0, 1); _dr.setSort(10); _dr.setCamera(cam_np)
+        orig_mask = self.camNode.getCameraMask()
+        self.camNode.setCameraMask(orig_mask & ~PMASK)
+        self.graphicsEngine.renderFrame()
+
+        for item_id, image_b64 in items_with_img:
+            _swap_shirt(image_b64)
+            self.graphicsEngine.renderFrame()
+            rtex = buf.getTexture()
+            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+            pnm = PNMImage()
+            if rtex.store(pnm):
+                out_tex = Texture(); out_tex.load(pnm)
+                out_tex.setMagfilter(Texture.FTLinear)
+                out_tex.setMinfilter(Texture.FTLinearMipmapLinear)
+                result[item_id] = out_tex
+            else:
+                print(f"[SHOP_THUMB] shirt store failed for {item_id}", flush=True)
+
+        for n in shirt_nodes[0]:
+            if n and not n.isEmpty(): n.removeNode()
+        self.graphicsEngine.removeWindow(buf)
+        cam_np.removeNode(); rig.removeNode()
+        self.camNode.setCameraMask(orig_mask)
         return result
 
     def _draw_shop_grid_task(self, items, err, owned, task):
@@ -1458,50 +1741,87 @@ class LoginScreenMixin:
             )
             return task.done
         thumb_textures = {}
-        # Separate hats (have |HATDATA| embedded) from tshirts
         hat_items    = [it for it in items if self._item_is_hat(it)]
-        tshirt_items = [it for it in items if not self._item_is_hat(it) and it.get("image_data")]
+        shirt_items  = [it for it in items if self._item_is_shirt(it)]
+        pants_items  = [it for it in items if self._item_is_pants(it)]
+        tshirt_items = [it for it in items if not self._item_is_hat(it)
+                        and not self._item_is_shirt(it)
+                        and not self._item_is_pants(it) and it.get("image_data")]
         try:
             if tshirt_items:
-                thumb_textures.update(self._render_shop_thumbnails(tshirt_items, buf_w=256, buf_h=256))
+                thumb_textures.update(self._render_shop_thumbnails(tshirt_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] RTT failed: {e}", flush=True)
-        # Hat thumbnails: extract the thumbnail portion from image_data
+        try:
+            if shirt_items:
+                thumb_textures.update(self._render_shop_thumbnails(shirt_items, buf_w=512, buf_h=512))
+        except Exception as e:
+            print(f"[SHOP_THUMB] shirt RTT failed: {e}", flush=True)
+        try:
+            if pants_items:
+                thumb_textures.update(self._render_shop_thumbnails(pants_items, buf_w=512, buf_h=512))
+        except Exception as e:
+            print(f"[SHOP_THUMB] pants RTT failed: {e}", flush=True)
         import base64 as _b64
+        # Hat thumbnails
         for it in hat_items:
             iid  = it.get("id")
             idat = self._item_thumbnail(it)
             if iid and idat:
                 try:
-                    raw = _b64.b64decode(idat)
-                    ss  = StringStream(raw)
-                    pnm = PNMImage()
+                    raw = _b64.b64decode(idat); ss = StringStream(raw); pnm = PNMImage()
                     if pnm.read(ss):
                         tex = Texture(); tex.load(pnm)
+                        tex.setMagfilter(Texture.FTLinear)
+                        tex.setMinfilter(Texture.FTLinearMipmapLinear)
                         thumb_textures[iid] = tex
                 except Exception:
                     pass
+        self._shop_thumb_textures = thumb_textures
+        self._shop_page = 0
         self._draw_shop_grid(items, frame, thumb_textures)
         return task.done
 
+    def _shop_goto_page(self, delta):
+        items = getattr(self, "_shop_items_cache", [])
+        if not items:
+            return
+        max_page = max(0, (len(items) - 1) // _SHOP_PAGE)
+        new_page = max(0, min(getattr(self, "_shop_page", 0) + delta, max_page))
+        if new_page == getattr(self, "_shop_page", 0):
+            return
+        self._shop_page = new_page
+        frame = getattr(self, "_shop_grid_parent", None)
+        if not frame or frame.isEmpty():
+            return
+        sub = getattr(self, "_shop_grid_cards", None)
+        if sub and not sub.isEmpty():
+            sub.destroy()
+        self._draw_shop_grid(items, frame, getattr(self, "_shop_thumb_textures", {}))
+
     def _draw_shop_grid(self, items, frame, thumb_textures=None):
+        sub = getattr(self, "_shop_grid_cards", None)
+        if sub and not sub.isEmpty():
+            sub.destroy()
+        cards_frame = DirectFrame(frameColor=(0, 0, 0, 0), frameSize=(-3, 3, -3, 3), parent=frame)
+        self._shop_grid_cards  = cards_frame
         self._shop_thumb_frames = {}
         _CARD_BG  = (0.84, 0.81, 0.93, 1.0)
         _NAME_COL = _RS_WHITE
-        _PRICE_COL = _RS_GREEN
-        _FREE_COL  = _RS_GREEN
         if thumb_textures is None:
             thumb_textures = {}
+
+        page     = getattr(self, "_shop_page", 0)
+        max_page = max(0, (len(items) - 1) // _SHOP_PAGE)
+        page_items = items[page * _SHOP_PAGE:(page + 1) * _SHOP_PAGE]
 
         total_w  = _SHOP_COLS * _SHOP_CW + (_SHOP_COLS - 1) * _SHOP_GAPX
         left_cx  = -total_w / 2 + _SHOP_CW / 2
         GRID_TOP = 0.68
-
         THUMB_CY = _SHOP_CH / 2 - _SHOP_CTH / 2
         NAME_Z   = _SHOP_CH / 2 - _SHOP_CTH - 0.056
-        PRICE_Z  = -_SHOP_CH / 2 + 0.038
 
-        for idx, item in enumerate(items[:_SHOP_PAGE]):
+        for idx, item in enumerate(page_items):
             col = idx % _SHOP_COLS
             row = idx // _SHOP_COLS
             cx  = left_cx + col * (_SHOP_CW + _SHOP_GAPX)
@@ -1510,12 +1830,11 @@ class LoginScreenMixin:
             card = DirectButton(
                 frameColor=_CARD_BG,
                 frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CH/2, _SHOP_CH/2),
-                parent=frame, pos=(cx, 0, cz),
+                parent=cards_frame, pos=(cx, 0, cz),
                 sortOrder=5, relief=1,
                 command=self._show_shop_item_popup,
                 extraArgs=[item],
             )
-            # Thumbnail — RTT avatar render if available, coloured fallback otherwise
             tint_idx = item.get("id", idx) % len(_THUMB_TINTS)
             thumb_frame = DirectFrame(
                 frameColor=_THUMB_TINTS[tint_idx],
@@ -1529,7 +1848,6 @@ class LoginScreenMixin:
             if rtt_tex:
                 thumb_frame["frameTexture"] = rtt_tex
                 thumb_frame["frameColor"]   = (1, 1, 1, 1)
-            # Item name
             name = item.get("name", "")
             DirectLabel(
                 text=(name[:13] + "...") if len(name) > 14 else name,
@@ -1538,6 +1856,16 @@ class LoginScreenMixin:
                 parent=card, pos=(0, 0, NAME_Z),
                 sortOrder=6,
             )
+
+        # Update pagination controls
+        _ACTIVE = _RS_NAV
+        _DIM    = (0.40, 0.35, 0.55, 1.0)
+        lbl  = getattr(self, "_shop_page_lbl",  None)
+        prev = getattr(self, "_shop_prev_btn",  None)
+        nxt  = getattr(self, "_shop_next_btn",  None)
+        if lbl  and not lbl.isEmpty():  lbl["text"] = f"Page {page + 1} / {max_page + 1}"
+        if prev and not prev.isEmpty(): prev["frameColor"] = _ACTIVE if page > 0        else _DIM
+        if nxt  and not nxt.isEmpty():  nxt["frameColor"]  = _ACTIVE if page < max_page else _DIM
 
     def _show_shop_item_popup(self, item_summary):
         existing = getattr(self, "_shop_item_popup", None)
@@ -1661,16 +1989,18 @@ class LoginScreenMixin:
                 extraArgs=[item_id],
             )
 
-        # Detect hat by |HATDATA| in image_data — works on the existing Render server
-        _popup_is_hat = self._item_is_hat(item_summary)
-        _popup_b64    = self._item_thumbnail(item_summary)  # thumbnail-only part
+        _popup_is_hat  = self._item_is_hat(item_summary)
+        # For shirts keep the full image_data (with |SHIRTDATA|) so RTT can detect it
+        _popup_img_raw = item_summary.get("image_data") or ""
+        _popup_b64     = self._item_thumbnail(item_summary)  # hat/tshirt path (stripped)
 
-        def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _b64=_popup_b64,
-                               frm=img_frame, _id=item_id):
-            if not frm or frm.isEmpty() or not _b64:
+        def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _img_raw=_popup_img_raw,
+                               _b64=_popup_b64, frm=img_frame, _id=item_id):
+            if not frm or frm.isEmpty():
                 return task.done
             try:
                 if _is_hat:
+                    if not _b64: return task.done
                     from panda3d.core import PNMImage, StringStream, Texture
                     import base64 as _b64mod
                     raw = _b64mod.b64decode(_b64)
@@ -1684,8 +2014,11 @@ class LoginScreenMixin:
                         frm["frameTexture"] = tex
                         frm["frameColor"]   = (1, 1, 1, 1)
                 else:
+                    # Pass full image_data so _render_shop_thumbnails detects |SHIRTDATA|
+                    img_data = _img_raw if _img_raw else _b64
+                    if not img_data: return task.done
                     textures = self._render_shop_thumbnails(
-                        [{"id": _id, "image_data": _b64}], buf_w=256, buf_h=256)
+                        [{"id": _id, "image_data": img_data}], buf_w=256, buf_h=256)
                     rtt = textures.get(_id)
                     if rtt:
                         frm["frameTexture"] = rtt
@@ -1923,6 +2256,231 @@ class LoginScreenMixin:
             parent=card, pos=(0.34, 0, -0.48),
             relief=1, command=_cancel,
         )
+
+    def _show_upload_shirt_dialog(self):
+        existing = getattr(self, "_upload_shirt_popup", None)
+        if existing:
+            try: existing.destroy()
+            except Exception: pass
+        self._upload_shirt_popup = None
+        self._upload_shirt_path  = ""
+
+        overlay = DirectFrame(frameColor=(0, 0, 0, 0.82), frameSize=(-3, 3, -3, 3),
+                              sortOrder=500, state='normal')
+        self._upload_shirt_popup = overlay
+
+        card = DirectFrame(frameColor=_RS_CARD, frameSize=(-0.70, 0.70, -0.54, 0.54),
+                           parent=overlay, sortOrder=501)
+        DirectLabel(text="Upload Shirt", text_fg=_RS_WHITE, text_scale=0.036,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, 0.42))
+        DirectLabel(text="Use the standard Roblox shirt template (585×559).",
+                    text_fg=_RS_GRAY, text_scale=0.020,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, 0.33))
+
+        img_lbl = DirectLabel(text="No file chosen", text_fg=_RS_GRAY, text_scale=0.024,
+                              text_align=TextNode.ALeft, frameColor=(0, 0, 0, 0),
+                              parent=card, pos=(-0.10, 0, 0.20))
+
+        def _browse():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                path = filedialog.askopenfilename(parent=root, title="Select Shirt template",
+                    filetypes=[("Image files", "*.png *.jpg *.jpeg"), ("All files", "*.*")])
+                root.destroy()
+                if path:
+                    self._upload_shirt_path = path
+                    short = path.replace("\\", "/").split("/")[-1]
+                    if len(short) > 30: short = "..." + short[-27:]
+                    img_lbl["text"] = short; img_lbl["text_fg"] = _RS_WHITE
+            except Exception as e:
+                print(f"[UPLOAD_SHIRT] browse: {e}", flush=True)
+
+        DirectButton(text="Choose Image", text_fg=_RS_WHITE, text_scale=0.026,
+                     frameColor=_RS_BORDER, frameSize=(-0.13, 0.13, -0.030, 0.030),
+                     parent=card, pos=(-0.50, 0, 0.20), relief=1, command=_browse)
+
+        DirectLabel(text="Name", text_fg=_RS_GRAY, text_scale=0.026, text_align=TextNode.ALeft,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(-0.64, 0, 0.06))
+        name_entry = DirectEntry(text="", scale=0.028, width=14, numLines=1,
+                                 frameColor=(0.18, 0.16, 0.28, 1), text_fg=_RS_WHITE,
+                                 parent=card, pos=(-0.62, 0, 0.00))
+        DirectLabel(text="Description", text_fg=_RS_GRAY, text_scale=0.026,
+                    text_align=TextNode.ALeft, frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(-0.64, 0, -0.10))
+        desc_entry = DirectEntry(text="", scale=0.028, width=14, numLines=1,
+                                 frameColor=(0.18, 0.16, 0.28, 1), text_fg=_RS_WHITE,
+                                 parent=card, pos=(-0.62, 0, -0.16))
+        upload_status = DirectLabel(text="", text_fg=_RS_GRAY, text_scale=0.022,
+                                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, -0.30))
+
+        def _do_upload():
+            path = self._upload_shirt_path
+            if not path:
+                upload_status["text"] = "Choose an image first."; upload_status["text_fg"] = _RS_RED; return
+            item_name = name_entry.get().strip()
+            if not item_name:
+                upload_status["text"] = "Enter a name."; upload_status["text_fg"] = _RS_RED; return
+            item_desc = desc_entry.get().strip()
+            token = getattr(self, "_session_token", None)
+            if not token:
+                upload_status["text"] = "Not logged in."; upload_status["text_fg"] = _RS_RED; return
+            upload_status["text"] = "Uploading..."; upload_status["text_fg"] = _RS_GRAY
+
+            def worker():
+                try:
+                    from PIL import Image as _PIL
+                    import io as _io, base64
+                    img = _PIL.open(path).convert("RGBA")
+                    # Always normalize to exactly 585×559 so crop coordinates match
+                    if img.size != (585, 559):
+                        img = img.resize((585, 559), _PIL.LANCZOS)
+                    buf = _io.BytesIO(); img.save(buf, "PNG")
+                    image_b64 = base64.b64encode(buf.getvalue()).decode()
+                except Exception as e:
+                    def _err(task, msg=str(e)):
+                        upload_status["text"] = f"Image error: {msg[:40]}"; upload_status["text_fg"] = _RS_RED
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _err, "_shirtUploadErr", appendTask=True); return
+                # Embed marker so client can distinguish shirts from T-shirts.
+                # Server only accepts "tshirt"/"hat", so category stays "tshirt".
+                combined = image_b64 + "|SHIRTDATA|"
+                result, err = auth_client.upload_shop_item(
+                    token, item_name, item_desc, 0, combined, category="tshirt")
+                def _done(task, ok=(result is not None), err=err):
+                    if ok:
+                        upload_status["text"] = "Published!"; upload_status["text_fg"] = _RS_GREEN
+                    else:
+                        upload_status["text"] = f"Error: {err}"; upload_status["text_fg"] = _RS_RED
+                    return task.done
+                self.taskMgr.doMethodLater(0, _done, "_shirtUploadDone", appendTask=True)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _cancel():
+            p = getattr(self, "_upload_shirt_popup", None)
+            if p:
+                try: p.destroy()
+                except Exception: pass
+            self._upload_shirt_popup = None
+
+        DirectButton(text="Upload to Shop", text_fg=_RS_WHITE, text_scale=0.030,
+                     frameColor=_RS_ORANGE, frameSize=(-0.18, 0.18, -0.038, 0.038),
+                     parent=card, pos=(-0.22, 0, -0.48), relief=1, command=_do_upload)
+        DirectButton(text="Cancel", text_fg=_RS_GRAY, text_scale=0.028,
+                     frameColor=_RS_BORDER, frameSize=(-0.12, 0.12, -0.034, 0.034),
+                     parent=card, pos=(0.34, 0, -0.48), relief=1, command=_cancel)
+
+    def _show_upload_pants_dialog(self):
+        existing = getattr(self, "_upload_pants_popup", None)
+        if existing:
+            try: existing.destroy()
+            except Exception: pass
+        self._upload_pants_popup = None
+        self._upload_pants_path  = ""
+
+        overlay = DirectFrame(frameColor=(0, 0, 0, 0.82), frameSize=(-3, 3, -3, 3),
+                              sortOrder=500, state='normal')
+        self._upload_pants_popup = overlay
+
+        card = DirectFrame(frameColor=_RS_CARD, frameSize=(-0.70, 0.70, -0.54, 0.54),
+                           parent=overlay, sortOrder=501)
+        DirectLabel(text="Upload Pants", text_fg=_RS_WHITE, text_scale=0.036,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, 0.42))
+        DirectLabel(text="Use the standard Roblox pants template (585×559).",
+                    text_fg=_RS_GRAY, text_scale=0.020,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, 0.33))
+
+        img_lbl = DirectLabel(text="No file chosen", text_fg=_RS_GRAY, text_scale=0.024,
+                              text_align=TextNode.ALeft, frameColor=(0, 0, 0, 0),
+                              parent=card, pos=(-0.10, 0, 0.20))
+
+        def _browse():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                path = filedialog.askopenfilename(parent=root, title="Select Pants template",
+                    filetypes=[("Image files", "*.png *.jpg *.jpeg"), ("All files", "*.*")])
+                root.destroy()
+                if path:
+                    self._upload_pants_path = path
+                    short = path.replace("\\", "/").split("/")[-1]
+                    if len(short) > 30: short = "..." + short[-27:]
+                    img_lbl["text"] = short; img_lbl["text_fg"] = _RS_WHITE
+            except Exception as e:
+                print(f"[UPLOAD_PANTS] browse: {e}", flush=True)
+
+        DirectButton(text="Choose Image", text_fg=_RS_WHITE, text_scale=0.026,
+                     frameColor=_RS_BORDER, frameSize=(-0.13, 0.13, -0.030, 0.030),
+                     parent=card, pos=(-0.50, 0, 0.20), relief=1, command=_browse)
+
+        DirectLabel(text="Name", text_fg=_RS_GRAY, text_scale=0.026, text_align=TextNode.ALeft,
+                    frameColor=(0, 0, 0, 0), parent=card, pos=(-0.64, 0, 0.06))
+        name_entry = DirectEntry(text="", scale=0.028, width=14, numLines=1,
+                                 frameColor=(0.18, 0.16, 0.28, 1), text_fg=_RS_WHITE,
+                                 parent=card, pos=(-0.62, 0, 0.00))
+        DirectLabel(text="Description", text_fg=_RS_GRAY, text_scale=0.026,
+                    text_align=TextNode.ALeft, frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(-0.64, 0, -0.10))
+        desc_entry = DirectEntry(text="", scale=0.028, width=14, numLines=1,
+                                 frameColor=(0.18, 0.16, 0.28, 1), text_fg=_RS_WHITE,
+                                 parent=card, pos=(-0.62, 0, -0.16))
+        upload_status = DirectLabel(text="", text_fg=_RS_GRAY, text_scale=0.022,
+                                    frameColor=(0, 0, 0, 0), parent=card, pos=(0, 0, -0.30))
+
+        def _do_upload():
+            path = self._upload_pants_path
+            if not path:
+                upload_status["text"] = "Choose an image first."; upload_status["text_fg"] = _RS_RED; return
+            item_name = name_entry.get().strip()
+            if not item_name:
+                upload_status["text"] = "Enter a name."; upload_status["text_fg"] = _RS_RED; return
+            item_desc = desc_entry.get().strip()
+            token = getattr(self, "_session_token", None)
+            if not token:
+                upload_status["text"] = "Not logged in."; upload_status["text_fg"] = _RS_RED; return
+            upload_status["text"] = "Uploading..."; upload_status["text_fg"] = _RS_GRAY
+
+            def worker():
+                try:
+                    from PIL import Image as _PIL
+                    import io as _io, base64
+                    img = _PIL.open(path).convert("RGBA")
+                    if img.size != (585, 559):
+                        img = img.resize((585, 559), _PIL.LANCZOS)
+                    buf = _io.BytesIO(); img.save(buf, "PNG")
+                    image_b64 = base64.b64encode(buf.getvalue()).decode()
+                except Exception as e:
+                    def _err(task, msg=str(e)):
+                        upload_status["text"] = f"Image error: {msg[:40]}"; upload_status["text_fg"] = _RS_RED
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _err, "_pantsUploadErr", appendTask=True); return
+                combined = image_b64 + "|PANTSDATA|"
+                result, err = auth_client.upload_shop_item(
+                    token, item_name, item_desc, 0, combined, category="tshirt")
+                def _done(task, ok=(result is not None), err=err):
+                    if ok:
+                        upload_status["text"] = "Published!"; upload_status["text_fg"] = _RS_GREEN
+                    else:
+                        upload_status["text"] = f"Error: {err}"; upload_status["text_fg"] = _RS_RED
+                    return task.done
+                self.taskMgr.doMethodLater(0, _done, "_pantsUploadDone", appendTask=True)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _cancel():
+            p = getattr(self, "_upload_pants_popup", None)
+            if p:
+                try: p.destroy()
+                except Exception: pass
+            self._upload_pants_popup = None
+
+        DirectButton(text="Upload to Shop", text_fg=_RS_WHITE, text_scale=0.030,
+                     frameColor=_RS_ORANGE, frameSize=(-0.18, 0.18, -0.038, 0.038),
+                     parent=card, pos=(-0.22, 0, -0.48), relief=1, command=_do_upload)
+        DirectButton(text="Cancel", text_fg=_RS_GRAY, text_scale=0.028,
+                     frameColor=_RS_BORDER, frameSize=(-0.12, 0.12, -0.034, 0.034),
+                     parent=card, pos=(0.34, 0, -0.48), relief=1, command=_cancel)
 
     def _show_upload_hat_from_menu(self):
         """Open a file dialog to pick an OBJ, then show the hat upload dialog."""
@@ -2906,7 +3464,7 @@ class LoginScreenMixin:
         self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
         self.updateCamera()
         self._entering_play_mode = False
-        # Restore equipped T-shirt and hat for solo play
+        # Restore equipped T-shirt, hat, and shirt for solo play
         ts_id = getattr(self, "_equipped_tshirt_id", None)
         if ts_id and hasattr(self, "apply_tshirt"):
             def _solo_ts(eid=ts_id):
@@ -2921,12 +3479,41 @@ class LoginScreenMixin:
         if ht_id and hasattr(self, "apply_hat"):
             def _solo_hat(hid=ht_id):
                 item, _ = auth_client.get_shop_item(hid)
-                if item and item.get("hat_data"):
-                    hd = item["hat_data"]
+                hd = self._item_hat_data_json(item) if item else None
+                if hd:
                     self.taskMgr.doMethodLater(
                         0, lambda task, _h=hd: (self.apply_hat(_h), task.done)[1],
                         "_soloRestoreHat", appendTask=True)
             threading.Thread(target=_solo_hat, daemon=True).start()
+        sh_id = getattr(self, "_equipped_shirt_id", None)
+        if sh_id and hasattr(self, "apply_shirt"):
+            def _solo_shirt(sid=sh_id):
+                item, _ = auth_client.get_shop_item(sid)
+                if item and item.get("image_data"):
+                    img = item["image_data"]
+                    b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _b=b64: (self.apply_shirt(_b), task.done)[1],
+                        "_soloRestoreShirt", appendTask=True)
+            threading.Thread(target=_solo_shirt, daemon=True).start()
+        pt_id  = getattr(self, "_equipped_pants_id",  None)
+        pt_b64 = getattr(self, "_equipped_pants_b64", None)
+        if pt_id and hasattr(self, "apply_pants"):
+            if pt_b64:
+                self.taskMgr.doMethodLater(
+                    0, lambda task, _b=pt_b64: (self.apply_pants(_b), task.done)[1],
+                    "_soloRestorePants", appendTask=True)
+            else:
+                def _solo_pants(pid=pt_id):
+                    item, _ = auth_client.get_shop_item(pid)
+                    if item and item.get("image_data"):
+                        img = item["image_data"]
+                        b64 = img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in img else img
+                        self._equipped_pants_b64 = b64
+                        self.taskMgr.doMethodLater(
+                            0, lambda task, _b=b64: (self.apply_pants(_b), task.done)[1],
+                            "_soloRestorePants", appendTask=True)
+                threading.Thread(target=_solo_pants, daemon=True).start()
         return task.done
 
     def _show_loading_screen(self, name="", thumbnail=""):
@@ -3100,13 +3687,48 @@ class LoginScreenMixin:
         if hat_id and hasattr(self, "apply_hat"):
             def _load_hat(hid=hat_id):
                 item, _ = auth_client.get_shop_item(hid)
-                if item and item.get("hat_data"):
-                    hd = item["hat_data"]
+                hd = self._item_hat_data_json(item) if item else None
+                if hd:
                     self.taskMgr.doMethodLater(
                         0, lambda task, _h=hd: (self.apply_hat(_h), task.done)[1],
                         "_restoreEquippedHat", appendTask=True,
                     )
             threading.Thread(target=_load_hat, daemon=True).start()
+        # Restore equipped shirt
+        shirt_id = getattr(self, "_equipped_shirt_id", None)
+        print(f"[SHIRT_DBG] _enter_play_mode: _equipped_shirt_id={shirt_id}", flush=True)
+        if shirt_id and hasattr(self, "apply_shirt"):
+            def _load_shirt(sid=shirt_id):
+                print(f"[SHIRT_DBG] fetching shop item {sid}", flush=True)
+                item, _ = auth_client.get_shop_item(sid)
+                print(f"[SHIRT_DBG] get_shop_item returned: item={item is not None}, has_image={bool((item or {}).get('image_data'))}", flush=True)
+                if item and item.get("image_data"):
+                    img = item["image_data"]
+                    b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+                    print(f"[SHIRT_DBG] scheduling apply_shirt, b64 len={len(b64)}", flush=True)
+                    self.taskMgr.doMethodLater(
+                        0, lambda task, _b=b64: (self.apply_shirt(_b), task.done)[1],
+                        "_restoreEquippedShirt", appendTask=True,
+                    )
+            threading.Thread(target=_load_shirt, daemon=True).start()
+        pants_id  = getattr(self, "_equipped_pants_id",  None)
+        pants_b64 = getattr(self, "_equipped_pants_b64", None)
+        if pants_id and hasattr(self, "apply_pants"):
+            if pants_b64:
+                self.taskMgr.doMethodLater(
+                    0, lambda task, _b=pants_b64: (self.apply_pants(_b), task.done)[1],
+                    "_restoreEquippedPants", appendTask=True)
+            else:
+                def _load_pants(pid=pants_id):
+                    item, _ = auth_client.get_shop_item(pid)
+                    if item and item.get("image_data"):
+                        img = item["image_data"]
+                        b64 = img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in img else img
+                        self._equipped_pants_b64 = b64
+                        self.taskMgr.doMethodLater(
+                            0, lambda task, _b=b64: (self.apply_pants(_b), task.done)[1],
+                            "_restoreEquippedPants", appendTask=True)
+                threading.Thread(target=_load_pants, daemon=True).start()
         try:
             self._load_bricks_from_data(json.loads(data_str))
         except Exception as e:
@@ -3188,12 +3810,19 @@ class LoginScreenMixin:
         token = self._session_token
         self._session_token    = None
         self._session_username = None
-        self._equipped_tshirt_id = None
-        self._equipped_hat_id    = None
+        self._equipped_tshirt_id  = None
+        self._equipped_hat_id     = None
+        self._equipped_shirt_id   = None
+        self._equipped_pants_id   = None
+        self._equipped_pants_b64  = None
         if hasattr(self, 'remove_tshirt'):
             self.remove_tshirt()
         if hasattr(self, 'remove_hat'):
             self.remove_hat()
+        if hasattr(self, 'remove_shirt'):
+            self.remove_shirt()
+        if hasattr(self, 'remove_pants'):
+            self.remove_pants()
         self._delete_saved_token()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()

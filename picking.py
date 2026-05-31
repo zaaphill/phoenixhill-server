@@ -1,6 +1,6 @@
 from panda3d.core import (
     CardMaker, TransparencyAttrib, CollisionNode, CollisionBox,
-    BitMask32, Point3, Vec3, LineSegs, NodePath,
+    BitMask32, Point3, Vec3, LineSegs, NodePath, KeyboardButton,
 )
 from direct.task import Task
 
@@ -48,44 +48,96 @@ class PickingMixin:
 
         # Brick click — unified selection, mode determines which handles appear.
         # Use the canonical wrapper from self.bricks so identity comparisons
-        # in _refresh_hierarchy (brick is self.selected_brick) stay correct.
+        # in _refresh_hierarchy (brick in self.selected_bricks) stay correct.
+        shift_held = (self.mouseWatcherNode.isButtonDown(KeyboardButton.lshift()) or
+                      self.mouseWatcherNode.isButtonDown(KeyboardButton.rshift()))
         for e in entries:
             np = e.getIntoNodePath()
             while not np.isEmpty() and np != self.render:
                 if np in self.bricks:
                     canonical = next(b for b in self.bricks if b == np)
-                    self.select_brick(canonical)
+                    if shift_held:
+                        self._toggle_brick_selection(canonical)
+                    else:
+                        self.select_brick(canonical)
                     return
                 np = np.getParent()
-        self.clear_selection()
+        if not shift_held:
+            self.clear_selection()
 
     def on_mouse1_up(self):
-        self.dragging = False
+        was_dragging       = self.dragging
+        was_scale_dragging = self.scale_dragging
+        self.dragging       = False
         self.scale_dragging = False
-        self.drag_handle = None
+        self.drag_handle    = None
+
+        if was_dragging and self.drag_start_brick_positions:
+            start_positions = dict(self.drag_start_brick_positions)
+            def undo_move(sp=start_positions):
+                for b, pos in sp.items():
+                    if b in self.bricks:
+                        b.setPos(pos)
+                        if b in self.brick_hitbox_visuals:
+                            self.update_brick_hitbox_visual_scale(
+                                b, self.brick_hitbox_visuals[b])
+            self._push_undo(undo_move)
+
+        if was_scale_dragging and self.scale_drag_start_all:
+            all_starts = dict(self.scale_drag_start_all)
+            def undo_scale(starts=all_starts):
+                for b, (s, p) in starts.items():
+                    if b in self.bricks:
+                        b.setScale(s)
+                        b.setPos(p)
+                        if b in self.brick_hitbox_visuals:
+                            self.update_brick_hitbox_visual_scale(
+                                b, self.brick_hitbox_visuals[b])
+                self.create_scale_handles()
+            self._push_undo(undo_scale)
 
     # ── Brick selection ───────────────────────────────────────────────────
 
     def select_brick(self, brick):
-        """Select a brick and show the gizmo matching the current active mode.
-
-        Move mode  → move handles
-        Scale mode → scale handles
-        No mode    → green outline only, no handles
-        """
-        if brick is self.selected_brick:
+        """Select a single brick, replacing any existing selection."""
+        if len(self.selected_bricks) == 1 and self.selected_bricks[0] is brick:
             return
         self.clear_selection()
-        self.selected_brick = brick
-        self._create_selection_outline(brick)
+        self.selected_brick  = brick
+        self.selected_bricks = [brick]
+        self._create_selection_outline()
         if self.is_move_mode:
             self.create_move_handles()
         elif self.is_scale_mode:
             self.create_scale_handles()
         self._show_inspector(brick)
 
+    def _toggle_brick_selection(self, brick):
+        """Add brick to selection or remove it if already selected (shift-click)."""
+        if brick in self.selected_bricks:
+            self.selected_bricks.remove(brick)
+            if not self.selected_bricks:
+                self.clear_selection()
+                return
+            self.selected_brick = self.selected_bricks[-1]
+        else:
+            self.selected_bricks.append(brick)
+            self.selected_brick = brick
+        self._remove_selection_outline()
+        self._create_selection_outline()
+        if self.is_move_mode:
+            for h in self.move_handles:
+                h['node'].removeNode()
+            self.move_handles.clear()
+            self.create_move_handles()
+        if len(self.selected_bricks) == 1:
+            self._show_inspector(self.selected_bricks[0])
+        else:
+            self._show_inspector_multi(len(self.selected_bricks))
+        self._refresh_hierarchy()
+
     def clear_selection(self):
-        if self.selected_brick:
+        if self.selected_bricks:
             for h in self.move_handles:
                 h['node'].removeNode()
             self.move_handles.clear()
@@ -93,7 +145,8 @@ class PickingMixin:
                 h['node'].removeNode()
             self.scale_handles.clear()
             self._remove_selection_outline()
-            self.selected_brick = None
+            self.selected_bricks = []
+            self.selected_brick  = None
             self._hide_inspector()
         self.dragging = False
         self.scale_dragging = False
@@ -101,7 +154,39 @@ class PickingMixin:
 
     # ── Selection outline ─────────────────────────────────────────────────
 
-    def _create_selection_outline(self, brick):
+    def _get_combined_bounds(self):
+        """Return (min_point, max_point) enclosing all selected bricks."""
+        all_min = all_max = None
+        for brick in self.selected_bricks:
+            try:
+                if brick.isEmpty():
+                    continue
+            except Exception:
+                continue
+            visual = self.brick_hitbox_visuals.get(brick)
+            try:
+                if visual and not visual.isEmpty():
+                    min_b, max_b = visual.getTightBounds(self.render)
+                else:
+                    min_b, max_b = brick.getTightBounds(self.render)
+            except Exception:
+                try:
+                    min_b, max_b = brick.getTightBounds(self.render)
+                except Exception:
+                    continue
+            if all_min is None:
+                all_min = Point3(min_b)
+                all_max = Point3(max_b)
+            else:
+                all_min = Point3(min(all_min.x, min_b.x),
+                                 min(all_min.y, min_b.y),
+                                 min(all_min.z, min_b.z))
+                all_max = Point3(max(all_max.x, max_b.x),
+                                 max(all_max.y, max_b.y),
+                                 max(all_max.z, max_b.z))
+        return all_min, all_max
+
+    def _create_selection_outline(self):
         self._remove_selection_outline()
         ls = LineSegs("sel_outline")
         ls.setColor(0.1, 0.95, 0.2, 1.0)
@@ -121,9 +206,9 @@ class PickingMixin:
         self._sel_outline.setShaderOff()
         self._sel_outline.setBin("transparent", 5)
         self._sel_outline.setDepthWrite(False)
-        self._update_selection_outline(brick)
+        self._update_selection_outline()
 
-    def _update_selection_outline(self, brick):
+    def _update_selection_outline(self):
         if not getattr(self, '_sel_outline', None):
             return
         try:
@@ -131,13 +216,32 @@ class PickingMixin:
                 return
         except Exception:
             return
-        box = self.get_brick_collision_box(brick)
-        m = 0.15
-        self._sel_outline.setPos(box['center'].x, box['center'].y, box['center'].z)
+        # Purge any bricks whose NodePath has been destroyed.
+        live = []
+        for b in self.selected_bricks:
+            try:
+                if not b.isEmpty():
+                    live.append(b)
+            except Exception:
+                pass
+        if len(live) != len(self.selected_bricks):
+            self.selected_bricks = live
+            self.selected_brick = live[-1] if live else None
+            if not live:
+                self.clear_selection()
+                return
+        min_b, max_b = self._get_combined_bounds()
+        if min_b is None:
+            return
+        cx = (min_b.x + max_b.x) / 2
+        cy = (min_b.y + max_b.y) / 2
+        cz = (min_b.z + max_b.z) / 2
+        m  = 0.15
+        self._sel_outline.setPos(cx, cy, cz)
         self._sel_outline.setScale(
-            box['half_width']  + m,
-            box['half_depth']  + m,
-            box['half_height'] + m,
+            (max_b.x - min_b.x) / 2 + m,
+            (max_b.y - min_b.y) / 2 + m,
+            (max_b.z - min_b.z) / 2 + m,
         )
 
     def _remove_selection_outline(self):
@@ -153,16 +257,11 @@ class PickingMixin:
     # ── Move handles ──────────────────────────────────────────────────────
 
     def create_move_handles(self):
-        if not self.selected_brick:
+        if not self.selected_bricks:
             return
-        visual = self.brick_hitbox_visuals.get(self.selected_brick)
-        try:
-            min_b, max_b = (visual.getTightBounds(self.render)
-                            if visual and not visual.isEmpty()
-                            else self.selected_brick.getTightBounds(self.render))
-        except Exception:
-            min_b, max_b = self.selected_brick.getTightBounds(self.render)
-
+        min_b, max_b = self._get_combined_bounds()
+        if min_b is None:
+            return
         cx = (min_b.x + max_b.x) / 2
         cy = (min_b.y + max_b.y) / 2
         cz = (min_b.z + max_b.z) / 2
@@ -214,14 +313,14 @@ class PickingMixin:
 
     def _make_handle(self, name, pos, color):
         cm = CardMaker(name)
-        cm.setFrame(-0.12, 0.12, -0.12, 0.12)
+        cm.setFrame(-0.2, 0.2, -0.2, 0.2)
         hnp = self.render.attachNewNode(cm.generate())
         hnp.setPos(pos)
         hnp.setColor(*color)
         hnp.setTransparency(TransparencyAttrib.MAlpha)
         hnp.setBillboardPointEye()
         cnode = CollisionNode(f"{name}_col")
-        cnode.addSolid(CollisionBox(Point3(0, 0, 0), 0.2, 0.2, 0.2))
+        cnode.addSolid(CollisionBox(Point3(0, 0, 0), 0.35, 0.35, 0.35))
         cnode.setIntoCollideMask(BitMask32.bit(1))
         cnode.setFromCollideMask(BitMask32.allOff())
         hnp.attachNewNode(cnode)
@@ -240,6 +339,12 @@ class PickingMixin:
         self.scale_drag_start_scale = Vec3(s.x, s.y, s.z)
         self.scale_drag_start_pos   = Vec3(brick.getPos())
 
+        # Record start state for every selected brick (supports multi-select).
+        self.scale_drag_start_all = {
+            b: (Vec3(b.getScale()), Vec3(b.getPos()))
+            for b in self.selected_bricks
+        }
+
         # Fix a world-space reference point for the drag planes.
         box = self.get_brick_collision_box(brick)
         self.scale_drag_center = Vec3(box['center'])
@@ -256,9 +361,6 @@ class PickingMixin:
 
         axis   = self.drag_handle['axis']
         axkey  = self.drag_handle['key']
-        brick  = self.selected_brick
-        ss     = self.scale_drag_start_scale   # Vec3 — brick scale at drag start
-        sp     = self.scale_drag_start_pos     # Vec3 — brick pos at drag start
         min_sz = 0.5
 
         # Compute how far the mouse has moved along the handle's outward axis.
@@ -273,62 +375,59 @@ class PickingMixin:
                 return
             delta = (cur - self.scale_drag_start_mouse).dot(Vec3(axis.x, axis.y, 0))
 
-        # Each face handle owns one axis.  Positive delta always means "grow".
-        # For the negative-direction handles the face that moves is the origin
-        # face, so we also slide the brick's position to keep the opposite face
-        # stationary.
-        if axkey == 'x':
-            new_bx      = max(min_sz, ss.x + delta)
-            actual_grow = new_bx - ss.x
-            brick.setScale(new_bx, ss.y, ss.z)
-            if axis.x < 0:   # left face: move origin left
-                brick.setPos(sp.x - actual_grow, sp.y, sp.z)
+        # Apply the same delta to every selected brick using each brick's own start state.
+        bricks_to_update = self.scale_drag_start_all if self.scale_drag_start_all else {
+            self.selected_brick: (self.scale_drag_start_scale, self.scale_drag_start_pos)
+        }
+        for brick, (ss, sp) in bricks_to_update.items():
+            if brick not in self.bricks:
+                continue
+            if axkey == 'x':
+                new_bx      = max(min_sz, ss.x + delta)
+                actual_grow = new_bx - ss.x
+                brick.setScale(new_bx, ss.y, ss.z)
+                if axis.x < 0:
+                    brick.setPos(sp.x - actual_grow, sp.y, sp.z)
 
-        elif axkey == 'y':
-            new_by      = max(min_sz, ss.y + delta)
-            actual_grow = new_by - ss.y
-            brick.setScale(ss.x, new_by, ss.z)
-            if axis.y < 0:   # front face: move origin forward
-                brick.setPos(sp.x, sp.y - actual_grow, sp.z)
+            elif axkey == 'y':
+                new_by      = max(min_sz, ss.y + delta)
+                actual_grow = new_by - ss.y
+                brick.setScale(ss.x, new_by, ss.z)
+                if axis.y < 0:
+                    brick.setPos(sp.x, sp.y - actual_grow, sp.z)
 
-        else:  # 'z'
-            new_bz      = max(min_sz, ss.z + delta)
-            actual_grow = new_bz - ss.z
-            brick.setScale(ss.x, ss.y, new_bz)
-            if axis.z < 0:   # bottom face: move origin down
-                brick.setPos(sp.x, sp.y, sp.z - actual_grow)
+            else:  # 'z'
+                new_bz      = max(min_sz, ss.z + delta)
+                actual_grow = new_bz - ss.z
+                brick.setScale(ss.x, ss.y, new_bz)
+                if axis.z < 0:
+                    brick.setPos(sp.x, sp.y, sp.z - actual_grow)
 
-        # Sync the visual; collision auto-updates because cnode is parented to brick.
-        if brick in self.brick_hitbox_visuals:
-            self.update_brick_hitbox_visual_scale(brick, self.brick_hitbox_visuals[brick])
+            if brick in self.brick_hitbox_visuals:
+                self.update_brick_hitbox_visual_scale(brick, self.brick_hitbox_visuals[brick])
 
     # ── Update task ───────────────────────────────────────────────────────
 
     def updateHandlesTask(self, task):
-        if self.selected_brick:
-            # Move handles: follow visual bounds
+        if self.selected_bricks:
+            # Move handles: follow combined visual bounds
             if self.move_handles:
-                visual = self.brick_hitbox_visuals.get(self.selected_brick)
-                try:
-                    min_b, max_b = (visual.getTightBounds(self.render)
-                                    if visual and not visual.isEmpty()
-                                    else self.selected_brick.getTightBounds(self.render))
-                except Exception:
-                    min_b, max_b = self.selected_brick.getTightBounds(self.render)
-                cx = (min_b.x + max_b.x) / 2
-                cy = (min_b.y + max_b.y) / 2
-                cz = (min_b.z + max_b.z) / 2
-                mg = max(max_b.x-min_b.x, max_b.y-min_b.y, max_b.z-min_b.z)*0.05+0.12
-                positions = [
-                    (max_b.x+mg, cy, cz), (min_b.x-mg, cy, cz),
-                    (cx, max_b.y+mg, cz), (cx, min_b.y-mg, cz),
-                    (cx, cy, max_b.z+mg), (cx, cy, min_b.z-mg),
-                ]
-                for h, pos in zip(self.move_handles, positions):
-                    h['node'].setPos(pos)
+                min_b, max_b = self._get_combined_bounds()
+                if min_b is not None:
+                    cx = (min_b.x + max_b.x) / 2
+                    cy = (min_b.y + max_b.y) / 2
+                    cz = (min_b.z + max_b.z) / 2
+                    mg = max(max_b.x-min_b.x, max_b.y-min_b.y, max_b.z-min_b.z)*0.05+0.12
+                    positions = [
+                        (max_b.x+mg, cy, cz), (min_b.x-mg, cy, cz),
+                        (cx, max_b.y+mg, cz), (cx, min_b.y-mg, cz),
+                        (cx, cy, max_b.z+mg), (cx, cy, min_b.z-mg),
+                    ]
+                    for h, pos in zip(self.move_handles, positions):
+                        h['node'].setPos(pos)
 
-            # Scale handles: follow collision box
-            if self.scale_handles:
+            # Scale handles: follow primary brick's collision box
+            if self.scale_handles and self.selected_brick:
                 box = self.get_brick_collision_box(self.selected_brick)
                 cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
                 hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
@@ -341,10 +440,9 @@ class PickingMixin:
                 for h, pos in zip(self.scale_handles, positions):
                     h['node'].setPos(pos)
 
-            # Selection outline
-            self._update_selection_outline(self.selected_brick)
+            self._update_selection_outline()
 
-        if self.dragging and self.drag_handle and self.selected_brick:
+        if self.dragging and self.drag_handle and self.selected_bricks:
             self.update_drag()
         if self.scale_dragging and self.drag_handle and self.selected_brick:
             self.update_scale_drag()
@@ -356,7 +454,10 @@ class PickingMixin:
         ax = [float(v) for v in axis_str.split(",")]
         self.dragging = True
         self.drag_handle = {'node': handle_np, 'axis': Vec3(*ax)}
-        self.drag_start_brick_pos = self.selected_brick.getPos(self.render)
+        # Record starting positions for all selected bricks
+        self.drag_start_brick_positions = {b: Vec3(b.getPos(self.render)) for b in self.selected_bricks}
+        # Use primary brick as the reference point for drag plane
+        self.drag_start_brick_pos = Vec3(self.selected_brick.getPos(self.render))
         if abs(ax[2]) > 0.5:
             self.drag_start_mouse_world = self._mouse_world_point_at_vertical_plane(self.drag_start_brick_pos)
         else:
@@ -368,18 +469,18 @@ class PickingMixin:
             cur = self._mouse_world_point_at_vertical_plane(self.drag_start_brick_pos)
             if not cur:
                 return
-            new_pos = self.drag_start_brick_pos + Vec3(0, 0, cur.z - self.drag_start_mouse_world.z)
-            self.selected_brick.setPos(new_pos)
+            delta = Vec3(0, 0, cur.z - self.drag_start_mouse_world.z)
         else:
             cur = self._mouse_world_point_at_z(self.drag_start_brick_pos.z)
             if not cur:
                 return
             axis_xy = Vec3(axis.x, axis.y, 0)
-            new_pos = self.drag_start_brick_pos + axis_xy.normalized() * (cur - self.drag_start_mouse_world).dot(axis_xy)
-            self.selected_brick.setPos(new_pos)
-        if self.selected_brick in self.brick_hitbox_visuals:
-            self.update_brick_hitbox_visual_scale(
-                self.selected_brick, self.brick_hitbox_visuals[self.selected_brick])
+            d = axis_xy.normalized() * (cur - self.drag_start_mouse_world).dot(axis_xy)
+            delta = Vec3(d.x, d.y, 0)
+        for brick, start_pos in self.drag_start_brick_positions.items():
+            brick.setPos(start_pos + delta)
+            if brick in self.brick_hitbox_visuals:
+                self.update_brick_hitbox_visual_scale(brick, self.brick_hitbox_visuals[brick])
 
     # ── Mouse raycasting ──────────────────────────────────────────────────
 

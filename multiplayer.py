@@ -208,6 +208,18 @@ class MultiplayerMixin:
                 await ws.send(json.dumps({"type": "equip_tshirt", "item_id": equipped}))
             except Exception as e:
                 print(f"[MP] failed to send equip_tshirt: {e}")
+        equipped_shirt = getattr(self, '_equipped_shirt_id', None)
+        if equipped_shirt:
+            try:
+                await ws.send(json.dumps({"type": "equip_shirt", "item_id": equipped_shirt}))
+            except Exception as e:
+                print(f"[MP] failed to send equip_shirt: {e}")
+        equipped_pants = getattr(self, '_equipped_pants_id', None)
+        if equipped_pants:
+            try:
+                await ws.send(json.dumps({"type": "equip_pants", "item_id": equipped_pants}))
+            except Exception as e:
+                print(f"[MP] failed to send equip_pants: {e}")
 
         last_pos = None
         last_sent = time.monotonic()
@@ -369,13 +381,15 @@ class MultiplayerMixin:
             print(f"[WS_RECV] type=state player_count={len(players)} colors_present={colors_in_state}", flush=True)
             for pid, d in players.items():
                 self._add_remote_player(pid, d.get("username", pid), d.get("colors"),
-                                        tshirt_id=d.get("tshirt_id"), hat_id=d.get("hat_id"))
+                                        tshirt_id=d.get("tshirt_id"), hat_id=d.get("hat_id"),
+                                        shirt_id=d.get("shirt_id"), pants_id=d.get("pants_id"))
                 self._update_remote_player(pid, d)
             self._update_leaderboard()
         elif t == "joined":
             print(f"[WS_RECV] type=joined pid={msg.get('player_id')} username={msg.get('username')!r} colors={msg.get('colors')}", flush=True)
             self._add_remote_player(msg["player_id"], msg.get("username", ""), msg.get("colors"),
-                                    tshirt_id=msg.get("tshirt_id"), hat_id=msg.get("hat_id"))
+                                    tshirt_id=msg.get("tshirt_id"), hat_id=msg.get("hat_id"),
+                                    shirt_id=msg.get("shirt_id"), pants_id=msg.get("pants_id"))
             self._update_leaderboard()
             self._broadcast_my_colors()
         elif t == "left":
@@ -405,10 +419,41 @@ class MultiplayerMixin:
                 else:
                     self._apply_tshirt_to_remote(pid, None)
         elif t == "equip_hat":
-            pid = msg.get("player_id")
+            pid     = msg.get("player_id")
             item_id = msg.get("item_id")
             if pid and pid in self._remote_players:
                 self._remote_players[pid]["hat_id"] = item_id
+                if item_id:
+                    threading.Thread(
+                        target=self._fetch_and_apply_remote_hat,
+                        args=(pid, item_id), daemon=True,
+                    ).start()
+                else:
+                    self._apply_hat_to_remote(pid, None)
+        elif t == "equip_shirt":
+            pid     = msg.get("player_id")
+            item_id = msg.get("item_id")
+            if pid and pid in self._remote_players:
+                self._remote_players[pid]["shirt_id"] = item_id
+                if item_id:
+                    threading.Thread(
+                        target=self._fetch_and_apply_remote_shirt,
+                        args=(pid, item_id), daemon=True,
+                    ).start()
+                else:
+                    self._apply_shirt_to_remote(pid, None)
+        elif t == "equip_pants":
+            pid     = msg.get("player_id")
+            item_id = msg.get("item_id")
+            if pid and pid in self._remote_players:
+                self._remote_players[pid]["pants_id"] = item_id
+                if item_id:
+                    threading.Thread(
+                        target=self._fetch_and_apply_remote_pants,
+                        args=(pid, item_id), daemon=True,
+                    ).start()
+                else:
+                    self._apply_pants_to_remote(pid, None)
 
     # ── Disconnect popup ─────────────────────────────────────────────────
 
@@ -466,7 +511,7 @@ class MultiplayerMixin:
         box.setTextureOff(1)
         return box
 
-    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None, hat_id=None):
+    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None, hat_id=None, shirt_id=None, pants_id=None):
         if pid in self._remote_players:
             return
         # Ignore ghost entries for our own account (zombie from a previous session
@@ -562,12 +607,29 @@ class MultiplayerMixin:
             "interp_pos": None, "interp_h": 0.0,
             "face_np": face_np, "face_frame": 0, "face_anim_t": 0.0,
             "tshirt_anchor": None, "tshirt_np": None,
-            "hat_id": hat_id,
+            "hat_id": hat_id, "hat_model": None,
+            "shirt_id": shirt_id, "shirt_nodes": [],
+            "pants_id": pants_id, "pants_nodes": [],
         }
         if tshirt_id:
             threading.Thread(
                 target=self._fetch_and_apply_remote_tshirt,
                 args=(pid, tshirt_id), daemon=True,
+            ).start()
+        if hat_id:
+            threading.Thread(
+                target=self._fetch_and_apply_remote_hat,
+                args=(pid, hat_id), daemon=True,
+            ).start()
+        if shirt_id:
+            threading.Thread(
+                target=self._fetch_and_apply_remote_shirt,
+                args=(pid, shirt_id), daemon=True,
+            ).start()
+        if pants_id:
+            threading.Thread(
+                target=self._fetch_and_apply_remote_pants,
+                args=(pid, pants_id), daemon=True,
             ).start()
         for _nk, _ck in [("torso_node","torso"),("la_node","left_arm"),("ra_node","right_arm"),
                           ("ll_node","left_leg"),("rl_node","right_leg"),("head_node","head")]:
@@ -588,6 +650,18 @@ class MultiplayerMixin:
                 pass
             d["tshirt_anchor"] = None
             d["tshirt_np"] = None
+            hat = d.get("hat_model")
+            if hat and not hat.isEmpty():
+                hat.removeNode()
+            d["hat_model"] = None
+            for n in d.get("shirt_nodes", []):
+                if n and not n.isEmpty():
+                    n.removeNode()
+            d["shirt_nodes"] = []
+            for n in d.get("pants_nodes", []):
+                if n and not n.isEmpty():
+                    n.removeNode()
+            d["pants_nodes"] = []
 
     def _fetch_and_apply_remote_tshirt(self, pid, item_id):
         if not hasattr(self, '_tshirt_cache'):
@@ -649,6 +723,235 @@ class MultiplayerMixin:
             d["tshirt_np"] = np
         except Exception as e:
             print(f"[TSHIRT_REMOTE] apply failed for {pid}: {e}", flush=True)
+
+    def _fetch_and_apply_remote_hat(self, pid, item_id):
+        if not hasattr(self, '_hat_cache'):
+            self._hat_cache = {}
+        hat_data_json = self._hat_cache.get(item_id)
+        if not hat_data_json:
+            import auth_client, base64 as _b64
+            result, _ = auth_client.get_shop_item(item_id)
+            if result:
+                img = result.get("image_data") or ""
+                if "|HATDATA|" in img:
+                    try:
+                        hat_data_json = _b64.b64decode(img.split("|HATDATA|", 1)[1]).decode()
+                        self._hat_cache[item_id] = hat_data_json
+                    except Exception as e:
+                        print(f"[HAT_REMOTE] decode: {e}", flush=True)
+        if hat_data_json:
+            self.taskMgr.doMethodLater(
+                0, self._apply_hat_to_remote_task, f"_applyHat_{pid}",
+                extraArgs=[pid, hat_data_json], appendTask=True,
+            )
+
+    def _apply_hat_to_remote_task(self, pid, hat_data_json, task):
+        self._apply_hat_to_remote(pid, hat_data_json)
+        return task.done
+
+    def _apply_hat_to_remote(self, pid, hat_data_json):
+        d = self._remote_players.get(pid)
+        if not d:
+            return
+        # Remove existing hat
+        old = d.get("hat_model")
+        if old and not old.isEmpty():
+            old.removeNode()
+        d["hat_model"] = None
+        if not hat_data_json:
+            return
+        try:
+            import json as _json, base64, tempfile, os as _os, shutil
+            from panda3d.core import Filename
+            data = _json.loads(hat_data_json)
+            tmp_dir = tempfile.mkdtemp(prefix="phx_rhat_")
+            obj_tmp = _os.path.join(tmp_dir, "hat.obj")
+            with open(obj_tmp, 'wb') as f:
+                f.write(base64.b64decode(data["obj_b64"]))
+            mtl_b64  = data.get("mtl_b64")
+            mtl_name = data.get("mtl_name") or "hat.mtl"
+            if mtl_b64:
+                with open(_os.path.join(tmp_dir, mtl_name), 'wb') as f:
+                    f.write(base64.b64decode(mtl_b64))
+            hat_m = self.loader.loadModel(Filename.fromOsSpecific(obj_tmp))
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if not hat_m:
+                return
+            hat_m.setR(-90)
+            tex_b64 = data.get("texture_b64")
+            if tex_b64:
+                raw = base64.b64decode(tex_b64)
+                tex_tmp = _os.path.join(tempfile.gettempdir(), f"phx_rhat_{pid}.png")
+                with open(tex_tmp, 'wb') as f:
+                    f.write(raw)
+                tex = self.loader.loadTexture(Filename.fromOsSpecific(tex_tmp))
+                try: _os.unlink(tex_tmp)
+                except Exception: pass
+                if tex:
+                    hat_m.setTexture(tex, 1)
+            bs = data.get("brick_scale", [2, 2, 2])
+            ms = data.get("model_scale", [1, 1, 1])
+            hat_m.setScale(bs[0]*ms[0], bs[1]*ms[1], bs[2]*ms[2])
+            hat_m.setHpr(*data.get("model_hpr", [0, 0, -90]))
+            z_off = float(data.get("z_offset", 0.0))
+            # Parent to remote player's root — moves/rotates with the player automatically
+            hat_m.reparentTo(d["root"])
+            hat_m.setPos(0, 0, 4.55 + 0.55 + z_off)
+            hat_m.setShaderOff()
+            hat_m.setTwoSided(True)
+            d["hat_model"] = hat_m
+        except Exception as e:
+            print(f"[HAT_REMOTE] apply failed for {pid}: {e}", flush=True)
+
+    def _fetch_and_apply_remote_shirt(self, pid, item_id):
+        if not hasattr(self, '_shirt_cache'):
+            self._shirt_cache = {}
+        image_b64 = self._shirt_cache.get(item_id)
+        if not image_b64:
+            import auth_client
+            result, _ = auth_client.get_shop_item(item_id)
+            if result and result.get("image_data"):
+                img = result["image_data"]
+                image_b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
+                self._shirt_cache[item_id] = image_b64
+        if image_b64:
+            self.taskMgr.doMethodLater(
+                0, self._apply_remote_shirt_task, f"_applyShirt_{pid}",
+                extraArgs=[pid, image_b64], appendTask=True,
+            )
+
+    def _apply_remote_shirt_task(self, pid, image_b64, task):
+        self._apply_shirt_to_remote(pid, image_b64)
+        return task.done
+
+    def _apply_shirt_to_remote(self, pid, image_b64):
+        d = self._remote_players.get(pid)
+        if not d:
+            return
+        for n in d.get("shirt_nodes", []):
+            if n and not n.isEmpty():
+                n.removeNode()
+        d["shirt_nodes"] = []
+        if not image_b64:
+            return
+        try:
+            import base64 as _b64
+            from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+            from character import Character
+            raw = _b64.b64decode(image_b64)
+            ss = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss):
+                return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            R = Character._SHIRT_REGIONS
+            root = d["root"]
+
+            def attach(parent, reg_map, w, dp, h, pos):
+                node = Character._make_shirt_box_geom(w, dp, h, reg_map)
+                np = parent.attachNewNode(node)
+                np.setPos(*pos)
+                np.setTexture(tex)
+                np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(1)
+                np.setTransparency(TransparencyAttrib.MAlpha)
+                return np
+
+            ra_piv = d["ra_piv"]
+            la_piv = d["la_piv"]
+            nodes = [
+                attach(root, {'front': R['torso_front'], 'back': R['torso_back'],
+                              'left': R['torso_left'],  'right': R['torso_right'],
+                              'top':  R['torso_up'],    'bottom': R['torso_down']},
+                       2, 1, 2, (-1, -0.5, 2)),
+                attach(ra_piv, {'front': R['rarm_front'], 'back': R['rarm_back'],
+                                'left': R['rarm_left'],   'right': R['rarm_right'],
+                                'top':  R['rarm_up'],     'bottom': R['rarm_down']},
+                       1, 1, 2, (-0.5, -0.5, -2)),
+                attach(la_piv, {'front': R['larm_front'], 'back': R['larm_back'],
+                                'left': R['larm_left'],   'right': R['larm_right'],
+                                'top':  R['larm_up'],     'bottom': R['larm_down']},
+                       1, 1, 2, (-0.5, -0.5, -2)),
+            ]
+            d["shirt_nodes"] = nodes
+        except Exception as e:
+            print(f"[SHIRT_REMOTE] apply failed for {pid}: {e}", flush=True)
+
+    def _fetch_and_apply_remote_pants(self, pid, item_id):
+        if not hasattr(self, '_pants_cache'):
+            self._pants_cache = {}
+        image_b64 = self._pants_cache.get(item_id)
+        if not image_b64:
+            import auth_client
+            result, _ = auth_client.get_shop_item(item_id)
+            if result and result.get("image_data"):
+                img = result["image_data"]
+                image_b64 = img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in img else img
+                self._pants_cache[item_id] = image_b64
+        if image_b64:
+            self.taskMgr.doMethodLater(
+                0, self._apply_remote_pants_task, f"_applyPants_{pid}",
+                extraArgs=[pid, image_b64], appendTask=True,
+            )
+
+    def _apply_remote_pants_task(self, pid, image_b64, task):
+        self._apply_pants_to_remote(pid, image_b64)
+        return task.done
+
+    def _apply_pants_to_remote(self, pid, image_b64):
+        d = self._remote_players.get(pid)
+        if not d:
+            return
+        for n in d.get("pants_nodes", []):
+            if n and not n.isEmpty():
+                n.removeNode()
+        d["pants_nodes"] = []
+        if not image_b64:
+            return
+        try:
+            import base64 as _b64
+            from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+            from character import Character
+            raw = _b64.b64decode(image_b64)
+            ss = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss):
+                return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            R  = Character._PANTS_REGIONS
+            TW = Character._PANTS_TEMPLATE_W
+            TH = Character._PANTS_TEMPLATE_H
+            root   = d["root"]
+            ll_piv = d["ll_piv"]
+            rl_piv = d["rl_piv"]
+
+            def attach(parent, reg_map, w, dp, h, pos):
+                node = Character._make_shirt_box_geom(w, dp, h, reg_map,
+                    template_w=TW, template_h=TH)
+                np = parent.attachNewNode(node)
+                np.setPos(*pos); np.setTexture(tex)
+                np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(1)
+                np.setTransparency(TransparencyAttrib.MAlpha)
+                return np
+
+            nodes = [
+                attach(root, {'front': R['torso_front'], 'back': R['torso_back'],
+                              'left': R['torso_left'],  'right': R['torso_right'],
+                              'top':  R['torso_up'],    'bottom': R['torso_down']},
+                       2, 1, 2, (-1, -0.5, 2)),
+                attach(rl_piv, {'front': R['rleg_front'], 'back': R['rleg_back'],
+                                'left': R['rleg_left'],  'right': R['rleg_right'],
+                                'top':  R['rleg_up'],    'bottom': R['rleg_down']},
+                       1, 1, 2, (-0.5, -0.5, -2)),
+                attach(ll_piv, {'front': R['lleg_front'], 'back': R['lleg_back'],
+                                'left': R['lleg_left'],  'right': R['lleg_right'],
+                                'top':  R['lleg_up'],    'bottom': R['lleg_down']},
+                       1, 1, 2, (-0.5, -0.5, -2)),
+            ]
+            d["pants_nodes"] = nodes
+        except Exception as e:
+            print(f"[PANTS_REMOTE] apply failed for {pid}: {e}", flush=True)
 
     def _apply_colors_to_remote_player(self, pid, colors):
         d = self._remote_players.get(pid)
@@ -790,6 +1093,24 @@ class MultiplayerMixin:
                 )
             except Exception as e:
                 print(f"[MP] broadcast equip_tshirt error: {e}")
+        equipped_shirt = getattr(self, '_equipped_shirt_id', None)
+        if equipped_shirt:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ws.send(json.dumps({"type": "equip_shirt", "item_id": equipped_shirt})),
+                    loop,
+                )
+            except Exception as e:
+                print(f"[MP] broadcast equip_shirt error: {e}")
+        equipped_pants = getattr(self, '_equipped_pants_id', None)
+        if equipped_pants:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ws.send(json.dumps({"type": "equip_pants", "item_id": equipped_pants})),
+                    loop,
+                )
+            except Exception as e:
+                print(f"[MP] broadcast equip_pants error: {e}")
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
