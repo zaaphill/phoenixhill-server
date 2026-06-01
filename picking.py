@@ -4,7 +4,8 @@ from panda3d.core import (
 )
 from direct.task import Task
 
-BLUE = (0.20, 0.45, 0.95, 0.95)
+BLUE  = (0.20, 0.45, 0.95, 0.95)
+GREEN = (0.10, 0.80, 0.20, 0.95)
 
 
 class PickingMixin:
@@ -39,6 +40,12 @@ class PickingMixin:
                 if np.hasTag("scale_handle"):
                     self.start_scale_drag(np, np.getTag("scale_axis"), np.getTag("scale_key"))
                     return
+        elif self.is_rotate_mode:
+            for e in entries:
+                np = e.getIntoNodePath().getParent()
+                if np.hasTag("rotate_handle"):
+                    self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
+                    return
         elif self.is_move_mode:
             for e in entries:
                 np = e.getIntoNodePath().getParent()
@@ -66,11 +73,13 @@ class PickingMixin:
             self.clear_selection()
 
     def on_mouse1_up(self):
-        was_dragging       = self.dragging
-        was_scale_dragging = self.scale_dragging
-        self.dragging       = False
-        self.scale_dragging = False
-        self.drag_handle    = None
+        was_dragging        = self.dragging
+        was_scale_dragging  = self.scale_dragging
+        was_rotate_dragging = self.rotate_dragging
+        self.dragging        = False
+        self.scale_dragging  = False
+        self.rotate_dragging = False
+        self.drag_handle     = None
 
         if was_dragging and self.drag_start_brick_positions:
             start_positions = dict(self.drag_start_brick_positions)
@@ -96,6 +105,15 @@ class PickingMixin:
                 self.create_scale_handles()
             self._push_undo(undo_scale)
 
+        if was_rotate_dragging and self.rotate_drag_start_hpr:
+            all_starts = dict(self.rotate_drag_start_hpr)
+            def undo_rotate(starts=all_starts):
+                for b, hpr in starts.items():
+                    if b in self.bricks:
+                        b.setHpr(hpr)
+                self.create_rotate_handles()
+            self._push_undo(undo_rotate)
+
     # ── Brick selection ───────────────────────────────────────────────────
 
     def select_brick(self, brick):
@@ -110,6 +128,8 @@ class PickingMixin:
             self.create_move_handles()
         elif self.is_scale_mode:
             self.create_scale_handles()
+        elif self.is_rotate_mode:
+            self.create_rotate_handles()
         self._show_inspector(brick)
 
     def _toggle_brick_selection(self, brick):
@@ -144,6 +164,9 @@ class PickingMixin:
             for h in self.scale_handles:
                 h['node'].removeNode()
             self.scale_handles.clear()
+            for h in self.rotate_handles:
+                h['node'].removeNode()
+            self.rotate_handles.clear()
             self._remove_selection_outline()
             self.selected_bricks = []
             self.selected_brick  = None
@@ -326,6 +349,77 @@ class PickingMixin:
         hnp.attachNewNode(cnode)
         return hnp
 
+    # ── Rotate handles ────────────────────────────────────────────────────
+
+    def create_rotate_handles(self):
+        for h in self.rotate_handles:
+            h['node'].removeNode()
+        self.rotate_handles.clear()
+        if not self.selected_brick:
+            return
+        box = self.get_brick_collision_box(self.selected_brick)
+        cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
+        hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
+        mg = max(hw, hd, hh) * 0.05 + 0.28
+
+        # top/bottom → heading (H, around Z); left/right → pitch (P); front/back → roll (R)
+        defs = [
+            ((cx,      cy,      cz+hh+mg), Vec3(0, 0,  1), 'h'),
+            ((cx,      cy,      cz-hh-mg), Vec3(0, 0, -1), 'h'),
+            ((cx+hw+mg,cy,      cz      ), Vec3( 1, 0, 0), 'p'),
+            ((cx-hw-mg,cy,      cz      ), Vec3(-1, 0, 0), 'p'),
+            ((cx,      cy+hd+mg,cz      ), Vec3(0,  1, 0), 'r'),
+            ((cx,      cy-hd-mg,cz      ), Vec3(0, -1, 0), 'r'),
+        ]
+        for idx, (pos, axis, rot_key) in enumerate(defs):
+            hnp = self._make_handle(f"rotate_handle_{idx}", pos, GREEN)
+            hnp.setTag("rotate_handle", "1")
+            hnp.setTag("rotate_axis",   f"{axis.x},{axis.y},{axis.z}")
+            hnp.setTag("rotate_key",    rot_key)
+            self.rotate_handles.append({'node': hnp, 'axis': axis, 'key': rot_key})
+
+    # ── Rotate dragging ───────────────────────────────────────────────────
+
+    def start_rotate_drag(self, handle_np, axis_str, rot_key):
+        ax = [float(v) for v in axis_str.split(",")]
+        self.rotate_dragging    = True
+        self.rotate_drag_handle = {'node': handle_np, 'axis': Vec3(*ax), 'key': rot_key}
+        self.rotate_drag_start_hpr = {b: Vec3(b.getHpr()) for b in self.selected_bricks}
+        if self.mouseWatcherNode.hasMouse():
+            m = self.mouseWatcherNode.getMouse()
+            self.rotate_drag_start_mpos = (m.getX(), m.getY())
+        else:
+            self.rotate_drag_start_mpos = (0.0, 0.0)
+
+    def update_rotate_drag(self):
+        if not self.rotate_drag_handle or not self.rotate_drag_start_hpr:
+            return
+        if not self.mouseWatcherNode.hasMouse():
+            return
+        m  = self.mouseWatcherNode.getMouse()
+        dx = m.getX() - self.rotate_drag_start_mpos[0]
+        dy = m.getY() - self.rotate_drag_start_mpos[1]
+        SENS = 270.0  # degrees per screen-width of drag
+        rot_key = self.rotate_drag_handle['key']
+        # H (yaw): drag left/right;  P (pitch): drag up/down;  R (roll): drag left/right
+        if rot_key == 'p':
+            delta = dy * SENS
+        else:
+            delta = dx * SENS
+        # Snap to 5-degree grid
+        delta = round(delta / 5) * 5
+        for brick, start_hpr in self.rotate_drag_start_hpr.items():
+            if brick not in self.bricks:
+                continue
+            if rot_key == 'h':
+                brick.setHpr(start_hpr.x + delta, start_hpr.y, start_hpr.z)
+            elif rot_key == 'p':
+                brick.setHpr(start_hpr.x, start_hpr.y + delta, start_hpr.z)
+            else:
+                brick.setHpr(start_hpr.x, start_hpr.y, start_hpr.z + delta)
+            if brick in self.brick_hitbox_visuals:
+                self.update_brick_hitbox_visual_scale(brick, self.brick_hitbox_visuals[brick])
+
     # ── Scale dragging ────────────────────────────────────────────────────
 
     def start_scale_drag(self, handle_np, axis_str, scale_key):
@@ -440,12 +534,28 @@ class PickingMixin:
                 for h, pos in zip(self.scale_handles, positions):
                     h['node'].setPos(pos)
 
+            # Rotate handles: same layout as scale but track brick's AABB
+            if self.rotate_handles and self.selected_brick:
+                box = self.get_brick_collision_box(self.selected_brick)
+                cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
+                hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
+                mg = max(hw, hd, hh)*0.05+0.28
+                positions = [
+                    (cx, cy, cz+hh+mg), (cx, cy, cz-hh-mg),
+                    (cx+hw+mg, cy, cz), (cx-hw-mg, cy, cz),
+                    (cx, cy+hd+mg, cz), (cx, cy-hd-mg, cz),
+                ]
+                for h, pos in zip(self.rotate_handles, positions):
+                    h['node'].setPos(pos)
+
             self._update_selection_outline()
 
         if self.dragging and self.drag_handle and self.selected_bricks:
             self.update_drag()
         if self.scale_dragging and self.drag_handle and self.selected_brick:
             self.update_scale_drag()
+        if self.rotate_dragging and self.rotate_drag_handle and self.selected_brick:
+            self.update_rotate_drag()
         return Task.cont
 
     # ── Move dragging ─────────────────────────────────────────────────────

@@ -170,8 +170,9 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
 
         # Mode flags
         self.is_playtest   = True
-        self.is_move_mode  = False
-        self.is_scale_mode = False
+        self.is_move_mode   = False
+        self.is_scale_mode  = False
+        self.is_rotate_mode = False
 
         # Brick state
         self.bricks = []
@@ -192,7 +193,12 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         self.scale_drag_start_pos   = None
         self.scale_drag_center      = None
         self.scale_drag_start_mouse = None
-        self.scale_drag_start_all   = {}  # {brick: (start_scale, start_pos)} for multi-select
+        self.scale_drag_start_all   = {}
+        self.rotate_handles          = []
+        self.rotate_dragging         = False
+        self.rotate_drag_handle      = None
+        self.rotate_drag_start_hpr   = {}
+        self.rotate_drag_start_mpos  = (0.0, 0.0)
 
         # Sub-systems
         self.setup_collision_system()

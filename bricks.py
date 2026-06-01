@@ -596,19 +596,48 @@ class BrickMixin:
         self.create_brick_blob_shadow(sp)
         self.add_hierarchy_entry(sp, name="SpawnPoint")
 
+    def _rotated_surface_z(self, brick, px, py):
+        """World Z of a rotated brick's top face at world XY (px, py). None if not above."""
+        from panda3d.core import LMatrix4, Point3
+        mat = brick.getMat(self.render)
+        inv = LMatrix4()
+        inv.invertAffineFrom(mat)
+        ro = inv.xformPoint(Point3(px, py, 10000))
+        rd = inv.xformVec(Vec3(0, 0, -1))
+        if abs(rd.z) < 1e-6:
+            return None
+        t = (1.0 - ro.z) / rd.z
+        if t < 0:
+            return None
+        lx = ro.x + rd.x * t
+        ly = ro.y + rd.y * t
+        if 0.0 <= lx <= 1.0 and 0.0 <= ly <= 1.0:
+            return mat.xformPoint(Point3(lx, ly, 1.0)).z
+        return None
+
     def get_ground_height_at_position(self, pos):
         highest_z = None
-        char_box = self.get_character_collision_box(pos)
+        char_box  = self.get_character_collision_box(pos)
+        cx_char   = char_box['center'].x
+        cy_char   = char_box['center'].y
 
         for brick in self._grid_nearby(pos, 15):
-            brick_box = self.get_brick_collision_box(brick)
-            brick_top = brick_box['max_z']
-
-            if (brick_top <= char_box['min_z'] + 0.1 and
-                    abs(char_box['center'].x - brick_box['center'].x) < (char_box['half_width'] + brick_box['half_width']) and
-                    abs(char_box['center'].y - brick_box['center'].y) < (char_box['half_depth'] + brick_box['half_depth'])):
-                if highest_z is None or brick_top > highest_z:
-                    highest_z = brick_top
+            hpr = brick.getHpr()
+            if abs(hpr.x) < 0.5 and abs(hpr.y) < 0.5 and abs(hpr.z) < 0.5:
+                # Axis-aligned fast path
+                brick_box = self.get_brick_collision_box(brick)
+                brick_top = brick_box['max_z']
+                if (brick_top <= char_box['min_z'] + 0.1 and
+                        abs(cx_char - brick_box['center'].x) < (char_box['half_width'] + brick_box['half_width']) and
+                        abs(cy_char - brick_box['center'].y) < (char_box['half_depth'] + brick_box['half_depth'])):
+                    if highest_z is None or brick_top > highest_z:
+                        highest_z = brick_top
+            else:
+                # Rotated brick: ray-plane intersection on the top face
+                surf_z = self._rotated_surface_z(brick, cx_char, cy_char)
+                if surf_z is not None and surf_z <= char_box['min_z'] + 0.1:
+                    if highest_z is None or surf_z > highest_z:
+                        highest_z = surf_z
 
         return highest_z
 

@@ -109,31 +109,38 @@ class UIMixin:
             command=self.toggle_scale_mode,
             **kw,
         )
+        self.rotate_button = DirectButton(
+            text="Rotate",
+            frameSize=(-0.066, 0.066, -0.032, 0.032),
+            pos=(0.930, 0, BZ),
+            command=self.toggle_rotate_mode,
+            **kw,
+        )
         self.export_button = DirectButton(
             text="Export",
             frameSize=(-0.065, 0.065, -0.032, 0.032),
-            pos=(0.930, 0, BZ),
+            pos=(1.075, 0, BZ),
             command=self.export_build,
             **kw,
         )
         self.import_button = DirectButton(
             text="Import",
             frameSize=(-0.065, 0.065, -0.032, 0.032),
-            pos=(1.075, 0, BZ),
+            pos=(1.220, 0, BZ),
             command=self.import_build,
             **kw,
         )
         self.cloud_save_button = DirectButton(
             text="Save",
             frameSize=(-0.055, 0.055, -0.032, 0.032),
-            pos=(1.210, 0, BZ),
+            pos=(1.355, 0, BZ),
             command=self.cloud_save_build,
             **kw,
         )
         self.hat_config_button = DirectButton(
             text="Hat Config",
             frameSize=(-0.085, 0.085, -0.032, 0.032),
-            pos=(1.385, 0, BZ),
+            pos=(1.530, 0, BZ),
             command=self._open_hat_obj,
             **kw,
         )
@@ -151,8 +158,8 @@ class UIMixin:
 
         # Editor-only buttons hidden at start (play mode is default)
         for w in (self.insert_brick_button, self.move_button,
-                  self.scale_button, self.export_button, self.import_button,
-                  self.cloud_save_button, self.hat_config_button):
+                  self.scale_button, self.rotate_button, self.export_button,
+                  self.import_button, self.cloud_save_button, self.hat_config_button):
             w.hide()
 
         self.ui_elements += [
@@ -1484,9 +1491,14 @@ class UIMixin:
     # ── Mode toggles ───────────────────────────────────────────────────────
 
     def toggle_scale_mode(self):
-        self.is_scale_mode = not self.is_scale_mode
-        self.is_move_mode  = False
-        self.move_button['text'] = "Move"
+        self.is_scale_mode  = not self.is_scale_mode
+        self.is_move_mode   = False
+        self.is_rotate_mode = False
+        self.move_button['text']   = "Move"
+        self.rotate_button['text'] = "Rotate"
+        for h in self.rotate_handles:
+            h['node'].removeNode()
+        self.rotate_handles.clear()
         if self.is_scale_mode:
             self.scale_button['text'] = "[Scale]"
             if self.selected_brick:
@@ -1498,10 +1510,37 @@ class UIMixin:
             self.scale_button['text'] = "Scale"
             self.clear_selection()
 
-    def toggle_move_mode(self):
-        self.is_move_mode  = not self.is_move_mode
-        self.is_scale_mode = False
+    def toggle_rotate_mode(self):
+        self.is_rotate_mode = not self.is_rotate_mode
+        self.is_scale_mode  = False
+        self.is_move_mode   = False
         self.scale_button['text'] = "Scale"
+        self.move_button['text']  = "Move"
+        for h in self.scale_handles:
+            h['node'].removeNode()
+        self.scale_handles.clear()
+        for h in self.move_handles:
+            h['node'].removeNode()
+        self.move_handles.clear()
+        if self.is_rotate_mode:
+            self.rotate_button['text'] = "[Rotate]"
+            if self.selected_brick:
+                self.create_rotate_handles()
+        else:
+            self.rotate_button['text'] = "Rotate"
+            for h in self.rotate_handles:
+                h['node'].removeNode()
+            self.rotate_handles.clear()
+
+    def toggle_move_mode(self):
+        self.is_move_mode   = not self.is_move_mode
+        self.is_scale_mode  = False
+        self.is_rotate_mode = False
+        self.scale_button['text']  = "Scale"
+        self.rotate_button['text'] = "Rotate"
+        for h in self.rotate_handles:
+            h['node'].removeNode()
+        self.rotate_handles.clear()
         if self.is_move_mode:
             self.move_button['text'] = "[Move]"
             if self.selected_brick:
@@ -1526,14 +1565,16 @@ class UIMixin:
             self.exit_button['text'] = "Edit"   # clicking will go to editor
             self._panel.hide()
             for w in (self.insert_brick_button, self.move_button,
-                      self.scale_button, self.export_button, self.import_button,
-                      self.cloud_save_button, self.hat_config_button):
+                      self.scale_button, self.rotate_button, self.export_button,
+                      self.import_button, self.cloud_save_button, self.hat_config_button):
                 w.hide()
             self.clear_selection()
-            self.is_move_mode  = False
-            self.is_scale_mode = False
-            self.move_button['text']  = "Move"
-            self.scale_button['text'] = "Scale"
+            self.is_move_mode   = False
+            self.is_scale_mode  = False
+            self.is_rotate_mode = False
+            self.move_button['text']   = "Move"
+            self.scale_button['text']  = "Scale"
+            self.rotate_button['text'] = "Rotate"
             self.cam_distance = 20
             self.cam_angle.set(0, 20)
             self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
@@ -1546,8 +1587,8 @@ class UIMixin:
             self.exit_button['text'] = "Play"   # clicking will go to play
             self._panel.show()
             for w in (self.insert_brick_button, self.move_button,
-                      self.scale_button, self.export_button, self.import_button,
-                      self.cloud_save_button):
+                      self.scale_button, self.rotate_button, self.export_button,
+                      self.import_button, self.cloud_save_button):
                 w.show()
             if getattr(self, '_session_username', None) == "bob":
                 self.hat_config_button.show()
