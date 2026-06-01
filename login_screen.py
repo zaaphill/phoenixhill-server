@@ -1225,6 +1225,7 @@ class LoginScreenMixin:
         self._shop_owned_ids    = getattr(self, "_shop_owned_ids", set())
         self._shop_item_popup   = None
         self._shop_cat_filter   = getattr(self, "_shop_cat_filter", "all")
+        self._shop_search       = getattr(self, "_shop_search", "")
 
         bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
@@ -1301,6 +1302,20 @@ class LoginScreenMixin:
                 relief=1,
                 command=_make_cat_cmd(cat_val),
             )
+        DirectLabel(
+            text="Search:",
+            text_fg=_RS_WHITE, text_scale=0.024,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(1.22, 0, 0.800),
+        )
+        _sse = DirectEntry(
+            text="", initialText=self._shop_search,
+            width=9, numLines=1, scale=0.026,
+            text_fg=_RS_WHITE, frameColor=_RS_BORDER,
+            parent=bg, pos=(1.34, 0, 0.790),
+            command=self._on_shop_search,
+        )
+        self._shop_search_entry = _sse
 
         # ── Grid container with Loading label ──────────────────────────
         self._shop_grid_parent = DirectFrame(
@@ -1937,6 +1952,15 @@ class LoginScreenMixin:
                     pass
         return task.done
 
+    def _on_shop_search(self, text):
+        self._shop_search = text.strip()
+        self._shop_page = 0
+        items = getattr(self, "_shop_items_cache", [])
+        frame = getattr(self, "_shop_grid_parent", None)
+        if frame and not frame.isEmpty():
+            self._draw_shop_grid(items, frame, getattr(self, "_shop_thumb_textures", {}))
+            self._schedule_page_thumb_render()
+
     def _shop_goto_page(self, delta):
         items = getattr(self, "_shop_items_cache", [])
         if not items:
@@ -1967,6 +1991,9 @@ class LoginScreenMixin:
         if thumb_textures is None:
             thumb_textures = {}
 
+        q = getattr(self, "_shop_search", "").strip().lower()
+        if q:
+            items = [it for it in items if q in (it.get("name") or "").lower()]
         page     = getattr(self, "_shop_page", 0)
         max_page = max(0, (len(items) - 1) // _SHOP_PAGE)
         page_items = items[page * _SHOP_PAGE:(page + 1) * _SHOP_PAGE]
@@ -3156,9 +3183,11 @@ class LoginScreenMixin:
         self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
-        self._browse_page       = 0
-        self._browse_all_builds = []
-        self._game_popup        = None
+        self._browse_page        = 0
+        self._browse_all_builds  = []
+        self._browse_initialized = False
+        self._browse_search      = getattr(self, "_browse_search", "")
+        self._game_popup         = None
 
         bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
@@ -3225,6 +3254,20 @@ class LoginScreenMixin:
             parent=bg, pos=(1.65, 0, 0.757),
             relief=1, command=self._build_browse_screen,
         )
+        DirectLabel(
+            text="Search:",
+            text_fg=_RS_GRAY, text_scale=0.026,
+            frameColor=(0, 0, 0, 0),
+            parent=bg, pos=(0.72, 0, 0.757),
+        )
+        _bse = DirectEntry(
+            text="", initialText=self._browse_search,
+            width=10, numLines=1, scale=0.026,
+            text_fg=_RS_WHITE, frameColor=_RS_BORDER,
+            parent=bg, pos=(0.84, 0, 0.745),
+            command=self._on_game_search,
+        )
+        self._browse_search_entry = _bse
 
         # ── Game grid container ────────────────────────────────────────────
         self._game_grid_parent = DirectFrame(
@@ -3267,6 +3310,11 @@ class LoginScreenMixin:
         self.taskMgr.doMethodLater(10, self._browse_auto_refresh, "_browseAutoRefresh",
                                    appendTask=True)
 
+    def _on_game_search(self, text):
+        self._browse_search = text.strip()
+        self._browse_page = 0
+        self._draw_game_grid()
+
     def _browse_auto_refresh(self, task):
         if not getattr(self, "_main_menu_ui", None):
             return task.done  # screen was navigated away from
@@ -3301,7 +3349,12 @@ class LoginScreenMixin:
             )
             return task.done
         self._browse_all_builds = builds
-        self._browse_page = 0
+        if not getattr(self, "_browse_initialized", False):
+            self._browse_page = 0
+            self._browse_initialized = True
+        else:
+            max_pg = max(0, (len(builds) - 1) // _PAGE_SIZE)
+            self._browse_page = min(getattr(self, "_browse_page", 0), max_pg)
         self._draw_game_grid()
         return task.done
 
@@ -3314,6 +3367,9 @@ class LoginScreenMixin:
 
         page   = getattr(self, "_browse_page", 0)
         builds = getattr(self, "_browse_all_builds", [])
+        q = getattr(self, "_browse_search", "").strip().lower()
+        if q:
+            builds = [b for b in builds if q in (b.get("name") or "").lower()]
         shown  = builds[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
         if not shown:
