@@ -850,7 +850,7 @@ class LoginScreenMixin:
         self._build_list_frame = DirectFrame(
             frameColor=(0, 0, 0, 0),
             frameSize=(-1.70, 1.70, -1.60, 0.66),
-            parent=bg,
+            parent=bg, pos=(0, 0, -0.16),
         )
         self._build_list_status = DirectLabel(
             text="Loading…",
