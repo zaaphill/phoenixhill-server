@@ -44,18 +44,13 @@ class PickingMixin:
                     self.start_scale_drag(np, np.getTag("scale_axis"), np.getTag("scale_key"))
                     return
         elif self.is_rotate_mode:
-            print(f"[ROT_CLICK] {len(entries)} entries", flush=True)
+            col_map = getattr(self, '_rotate_col_map', {})
             for e in entries:
-                into = e.getIntoNodePath()
-                print(f"  into={into} name={into.getName()} parent={into.getParent()}", flush=True)
-                p = into
-                while not p.isEmpty():
-                    print(f"    node={p.getName()} tags={p.getTags()}", flush=True)
-                    if p.hasTag("rotate_handle"):
-                        self.start_rotate_drag(p, p.getTag("rotate_axis"), p.getTag("rotate_key"))
-                        return
-                    p = p.getParent()
-            print("[ROT_CLICK] no rotate_handle found in any entry", flush=True)
+                name = e.getIntoNodePath().getName()
+                if name in col_map:
+                    axis_str, rot_key = col_map[name]
+                    self.start_rotate_drag(e.getIntoNodePath(), axis_str, rot_key)
+                    return
         elif self.is_move_mode:
             for e in entries:
                 np = e.getIntoNodePath().getParent()
@@ -175,8 +170,10 @@ class PickingMixin:
                 h['node'].removeNode()
             self.scale_handles.clear()
             for h in self.rotate_handles:
-                h['node'].removeNode()   # removes children (col_nodes) too
+                h['node'].removeNode()
             self.rotate_handles.clear()
+            if hasattr(self, '_rotate_col_map'):
+                self._rotate_col_map.clear()
             self._remove_selection_outline()
             self.selected_bricks = []
             self.selected_brick  = None
@@ -405,20 +402,23 @@ class PickingMixin:
         for h in self.rotate_handles:
             h['node'].removeNode()
         self.rotate_handles.clear()
+        if not hasattr(self, '_rotate_col_map'):
+            self._rotate_col_map = {}
+        self._rotate_col_map.clear()
         if not self.selected_brick:
             return
         box = self.get_brick_collision_box(self.selected_brick)
         cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
         hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
         radius = max(hw, hd, hh) + 1.8
-        tube_r = 0.22   # thickness of the torus tube
+        tube_r = 0.22
 
         rings = [
-            (Vec3(0, 0, 1), (0.15, 0.45, 0.95, 1), 'h'),  # Z → blue
-            (Vec3(1, 0, 0), (0.90, 0.18, 0.18, 1), 'p'),  # X → red
-            (Vec3(0, 1, 0), (0.12, 0.82, 0.22, 1), 'r'),  # Y → green
+            (Vec3(0, 0, 1), (0.15, 0.45, 0.95, 1), 'h'),
+            (Vec3(1, 0, 0), (0.90, 0.18, 0.18, 1), 'p'),
+            (Vec3(0, 1, 0), (0.12, 0.82, 0.22, 1), 'r'),
         ]
-        COL_SEGS = 32   # dense enough to cover the ring with no gaps
+        COL_SEGS = 32
 
         for axis, color, rot_key in rings:
             ax    = axis.normalized()
@@ -428,34 +428,27 @@ class PickingMixin:
 
             ring_np = self.render.attachNewNode(f"rotate_ring_{rot_key}")
             ring_np.setPos(cx, cy, cz)
-            ring_np.setTag("rotate_handle", "1")
-            ring_np.setTag("rotate_axis",   f"{axis.x},{axis.y},{axis.z}")
-            ring_np.setTag("rotate_key",    rot_key)
             ring_np.setTwoSided(True)
 
-            # Torus mesh
             torus = self._make_torus_geom(rot_key, axis, perp1, perp2, radius, tube_r, color)
             tnp = ring_np.attachNewNode(torus)
             tnp.setShaderOff()
             tnp.setLightOff()
 
-            # Dense collision spheres with tags set directly on each cnp
-            # (same pattern as scale handles: e.getIntoNodePath().getParent() → tagged node)
             col_radius = (2 * math.pi * radius / COL_SEGS) * 0.6 + tube_r
-            axis_tag   = f"{axis.x},{axis.y},{axis.z}"
+            axis_str   = f"{axis.x},{axis.y},{axis.z}"
             for i in range(COL_SEGS):
-                a   = 2 * math.pi * i / COL_SEGS
-                cpt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
-                cnode = CollisionNode(f"ring_{rot_key}_col_{i}")
+                a    = 2 * math.pi * i / COL_SEGS
+                cpt  = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
+                name = f"ring_{rot_key}_col_{i}"
+                cnode = CollisionNode(name)
                 cnode.addSolid(CollisionSphere(0, 0, 0, col_radius))
                 cnode.setIntoCollideMask(BitMask32.bit(1))
                 cnode.setFromCollideMask(BitMask32.allOff())
                 cnp = ring_np.attachNewNode(cnode)
                 cnp.setPos(cpt)
-                # Tags on cnp so getIntoNodePath().getParent() == cnp → works like scale handles
-                cnp.setTag("rotate_handle", "1")
-                cnp.setTag("rotate_axis",   axis_tag)
-                cnp.setTag("rotate_key",    rot_key)
+                # Store axis/key by node name — avoids Panda3D tag persistence issues
+                self._rotate_col_map[name] = (axis_str, rot_key)
 
             self.rotate_handles.append({
                 'node': ring_np, 'axis': axis, 'key': rot_key,
