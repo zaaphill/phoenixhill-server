@@ -1310,8 +1310,22 @@ class LoginScreenMixin:
             relief=1,
             parent=bg, pos=(1.22, 0, 0.790),
             command=self._on_shop_search,
+            focusInCommand=lambda e=None: _sse.enterText("") if _sse.get() == "Search..." else None,
+            focusOutCommand=lambda e=None: _sse.enterText("Search...") if not _sse.get().strip() else None,
         )
         self._shop_search_entry = _sse
+        def _clear_shop_search():
+            _sse.enterText("")
+            _sse.enterText("Search...")
+            self._on_shop_search("")
+        DirectButton(
+            text="X",
+            text_fg=(0.95, 0.95, 0.95, 1), text_scale=0.022,
+            frameColor=(0.50, 0.35, 0.65, 1),
+            frameSize=(-0.026, 0.026, -0.026, 0.026),
+            parent=bg, pos=(1.625, 0, 0.800),
+            relief=1, command=_clear_shop_search,
+        )
 
         # ── Grid container with Loading label ──────────────────────────
         self._shop_grid_parent = DirectFrame(
@@ -3258,8 +3272,22 @@ class LoginScreenMixin:
             relief=1,
             parent=bg, pos=(0.76, 0, 0.745),
             command=self._on_game_search,
+            focusInCommand=lambda e=None: _bse.enterText("") if _bse.get() == "Search..." else None,
+            focusOutCommand=lambda e=None: _bse.enterText("Search...") if not _bse.get().strip() else None,
         )
         self._browse_search_entry = _bse
+        def _clear_game_search():
+            _bse.enterText("")
+            _bse.enterText("Search...")
+            self._on_game_search("")
+        DirectButton(
+            text="X",
+            text_fg=(0.95, 0.95, 0.95, 1), text_scale=0.022,
+            frameColor=(0.50, 0.35, 0.65, 1),
+            frameSize=(-0.028, 0.028, -0.028, 0.028),
+            parent=bg, pos=(1.175, 0, 0.757),
+            relief=1, command=_clear_game_search,
+        )
 
         # ── Game grid container ────────────────────────────────────────────
         self._game_grid_parent = DirectFrame(
