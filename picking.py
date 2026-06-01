@@ -45,12 +45,10 @@ class PickingMixin:
                     return
         elif self.is_rotate_mode:
             for e in entries:
-                np = e.getIntoNodePath()
-                while not np.isEmpty() and np != self.render:
-                    if np.hasTag("rotate_handle"):
-                        self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
-                        return
-                    np = np.getParent()
+                np = e.getIntoNodePath().getParent()
+                if np.hasTag("rotate_handle"):
+                    self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
+                    return
         elif self.is_move_mode:
             for e in entries:
                 np = e.getIntoNodePath().getParent()
@@ -434,8 +432,10 @@ class PickingMixin:
             tnp.setShaderOff()
             tnp.setLightOff()
 
-            # Dense collision spheres — sphere radius equals tube_r + small overlap so there are NO gaps
+            # Dense collision spheres with tags set directly on each cnp
+            # (same pattern as scale handles: e.getIntoNodePath().getParent() → tagged node)
             col_radius = (2 * math.pi * radius / COL_SEGS) * 0.6 + tube_r
+            axis_tag   = f"{axis.x},{axis.y},{axis.z}"
             for i in range(COL_SEGS):
                 a   = 2 * math.pi * i / COL_SEGS
                 cpt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
@@ -445,6 +445,10 @@ class PickingMixin:
                 cnode.setFromCollideMask(BitMask32.allOff())
                 cnp = ring_np.attachNewNode(cnode)
                 cnp.setPos(cpt)
+                # Tags on cnp so getIntoNodePath().getParent() == cnp → works like scale handles
+                cnp.setTag("rotate_handle", "1")
+                cnp.setTag("rotate_axis",   axis_tag)
+                cnp.setTag("rotate_key",    rot_key)
 
             self.rotate_handles.append({
                 'node': ring_np, 'axis': axis, 'key': rot_key,
