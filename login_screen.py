@@ -1874,37 +1874,67 @@ class LoginScreenMixin:
                 parent=frame, pos=(0, 0, 0),
             )
             return task.done
-        thumb_textures = {}
-        hat_items    = [it for it in items if self._item_is_hat(it)]
-        shirt_items  = [it for it in items if self._item_is_shirt(it)]
-        pants_items  = [it for it in items if self._item_is_pants(it)]
-        tshirt_items = [it for it in items if not self._item_is_hat(it)
+        self._shop_thumb_textures = {}
+        self._shop_page = 0
+        self._draw_shop_grid(items, frame, {})
+        self._schedule_page_thumb_render()
+        return task.done
+
+    def _schedule_page_thumb_render(self):
+        items = getattr(self, "_shop_items_cache", [])
+        frame = getattr(self, "_shop_grid_parent", None)
+        if not items or not frame or frame.isEmpty():
+            return
+        page = getattr(self, "_shop_page", 0)
+        page_items = items[page * _SHOP_PAGE:(page + 1) * _SHOP_PAGE]
+        cache = getattr(self, "_shop_thumb_textures", {})
+        to_render = [it for it in page_items if it.get("id") not in cache]
+        if not to_render:
+            return
+        self.taskMgr.doMethodLater(
+            0, self._render_page_thumbs_task, "_renderPageThumbs",
+            extraArgs=[to_render], appendTask=True,
+        )
+
+    def _render_page_thumbs_task(self, to_render, task):
+        cache = getattr(self, "_shop_thumb_textures", {})
+        hat_items    = [it for it in to_render if self._item_is_hat(it)]
+        shirt_items  = [it for it in to_render if self._item_is_shirt(it)]
+        pants_items  = [it for it in to_render if self._item_is_pants(it)]
+        tshirt_items = [it for it in to_render if not self._item_is_hat(it)
                         and not self._item_is_shirt(it)
                         and not self._item_is_pants(it) and it.get("image_data")]
         try:
             if tshirt_items:
-                thumb_textures.update(self._render_shop_thumbnails(tshirt_items, buf_w=512, buf_h=512))
+                cache.update(self._render_shop_thumbnails(tshirt_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] RTT failed: {e}", flush=True)
         try:
             if shirt_items:
-                thumb_textures.update(self._render_shop_thumbnails(shirt_items, buf_w=512, buf_h=512))
+                cache.update(self._render_shop_thumbnails(shirt_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] shirt RTT failed: {e}", flush=True)
         try:
             if pants_items:
-                thumb_textures.update(self._render_shop_thumbnails(pants_items, buf_w=512, buf_h=512))
+                cache.update(self._render_shop_thumbnails(pants_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] pants RTT failed: {e}", flush=True)
-        # Hat thumbnails — RTT-rendered with player's skin colors
         try:
             if hat_items:
-                thumb_textures.update(self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512))
+                cache.update(self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] hat RTT failed: {e}", flush=True)
-        self._shop_thumb_textures = thumb_textures
-        self._shop_page = 0
-        self._draw_shop_grid(items, frame, thumb_textures)
+        thumb_frames = getattr(self, "_shop_thumb_frames", {})
+        for it in to_render:
+            iid = it.get("id")
+            tex = cache.get(iid)
+            frm = thumb_frames.get(iid)
+            if tex and frm and not frm.isEmpty():
+                try:
+                    frm["frameTexture"] = tex
+                    frm["frameColor"]   = (1, 1, 1, 1)
+                except Exception:
+                    pass
         return task.done
 
     def _shop_goto_page(self, delta):
@@ -1923,6 +1953,7 @@ class LoginScreenMixin:
         if sub and not sub.isEmpty():
             sub.destroy()
         self._draw_shop_grid(items, frame, getattr(self, "_shop_thumb_textures", {}))
+        self._schedule_page_thumb_render()
 
     def _draw_shop_grid(self, items, frame, thumb_textures=None):
         sub = getattr(self, "_shop_grid_cards", None)
