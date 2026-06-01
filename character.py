@@ -527,10 +527,11 @@ class CharacterMixin:
             bl, br, tr, tl = uvs
             quad([(0,0,0),(0,d,0),(0,d,h),(0,0,h)], [br, bl, tl, tr], (-1, 0, 0))
 
-        # Top (Z=h, +Z normal). U=X, V=Y(front→back).
+        # Top (Z=h, +Z normal). Flip U so left/right matches Roblox template.
         uvs = region_uvs('top')
         if uvs:
-            quad([(0,d,h),(w,d,h),(w,0,h),(0,0,h)], list(uvs), (0, 0, 1))
+            bl, br, tr, tl = uvs
+            quad([(0,d,h),(w,d,h),(w,0,h),(0,0,h)], [br, bl, tl, tr], (0, 0, 1))
 
         # Bottom (Z=0, -Z normal).
         uvs = region_uvs('bottom')
