@@ -827,7 +827,7 @@ class LoginScreenMixin:
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.130, 0.130, -0.030, 0.030),
-            parent=bg, pos=(1.55, 0, 0.690),
+            parent=bg, pos=(1.55, 0, 0.688),
             command=self._show_upload_tshirt_dialog, relief=1,
         )
         DirectButton(
@@ -835,7 +835,7 @@ class LoginScreenMixin:
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.130, 0.130, -0.030, 0.030),
-            parent=bg, pos=(1.55, 0, 0.642),
+            parent=bg, pos=(1.55, 0, 0.619),
             command=self._show_upload_shirt_dialog, relief=1,
         )
         DirectButton(
@@ -843,7 +843,7 @@ class LoginScreenMixin:
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.130, 0.130, -0.030, 0.030),
-            parent=bg, pos=(1.55, 0, 0.594),
+            parent=bg, pos=(1.55, 0, 0.550),
             command=self._show_upload_pants_dialog, relief=1,
         )
         # ── Build list ──────────────────────────────────────────────────────
