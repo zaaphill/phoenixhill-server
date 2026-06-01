@@ -44,11 +44,18 @@ class PickingMixin:
                     self.start_scale_drag(np, np.getTag("scale_axis"), np.getTag("scale_key"))
                     return
         elif self.is_rotate_mode:
+            print(f"[ROT_CLICK] {len(entries)} entries", flush=True)
             for e in entries:
-                np = e.getIntoNodePath().getParent()
-                if np.hasTag("rotate_handle"):
-                    self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
-                    return
+                into = e.getIntoNodePath()
+                print(f"  into={into} name={into.getName()} parent={into.getParent()}", flush=True)
+                p = into
+                while not p.isEmpty():
+                    print(f"    node={p.getName()} tags={p.getTags()}", flush=True)
+                    if p.hasTag("rotate_handle"):
+                        self.start_rotate_drag(p, p.getTag("rotate_axis"), p.getTag("rotate_key"))
+                        return
+                    p = p.getParent()
+            print("[ROT_CLICK] no rotate_handle found in any entry", flush=True)
         elif self.is_move_mode:
             for e in entries:
                 np = e.getIntoNodePath().getParent()
