@@ -2120,23 +2120,17 @@ class LoginScreenMixin:
         _popup_b64     = self._item_thumbnail(item_summary)  # hat/tshirt path (stripped)
 
         def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _img_raw=_popup_img_raw,
-                               _b64=_popup_b64, frm=img_frame, _id=item_id):
+                               _b64=_popup_b64, frm=img_frame, _id=item_id,
+                               _item=item_summary):
             if not frm or frm.isEmpty():
                 return task.done
             try:
                 if _is_hat:
-                    if not _b64: return task.done
-                    from panda3d.core import PNMImage, StringStream, Texture
-                    import base64 as _b64mod
-                    raw = _b64mod.b64decode(_b64)
-                    ss  = StringStream(raw)
-                    pnm = PNMImage()
-                    if pnm.read(ss):
-                        tex = Texture()
-                        tex.load(pnm)
-                        tex.setMinfilter(Texture.FTLinear)
-                        tex.setMagfilter(Texture.FTLinear)
-                        frm["frameTexture"] = tex
+                    textures = self._render_hat_thumbnails(
+                        [_item], buf_w=256, buf_h=256)
+                    rtt = textures.get(_id)
+                    if rtt:
+                        frm["frameTexture"] = rtt
                         frm["frameColor"]   = (1, 1, 1, 1)
                 else:
                     # Pass full image_data so _render_shop_thumbnails detects |SHIRTDATA|
