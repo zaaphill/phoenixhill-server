@@ -3996,7 +3996,7 @@ class LoginScreenMixin:
         if hasattr(self, "_panel"):
             self._panel.show()
         for attr in ("exit_button", "insert_brick_button", "move_button", "scale_button",
-                     "export_button", "import_button", "cloud_save_button"):
+                     "rotate_button", "export_button", "import_button", "cloud_save_button"):
             btn = getattr(self, attr, None)
             if btn:
                 btn.show()

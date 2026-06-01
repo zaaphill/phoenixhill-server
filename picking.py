@@ -1,7 +1,8 @@
 from panda3d.core import (
-    CardMaker, TransparencyAttrib, CollisionNode, CollisionBox,
+    CardMaker, TransparencyAttrib, CollisionNode, CollisionBox, CollisionSphere,
     BitMask32, Point3, Vec3, LineSegs, NodePath, KeyboardButton,
 )
+import math
 from direct.task import Task
 
 BLUE  = (0.20, 0.45, 0.95, 0.95)
@@ -42,10 +43,12 @@ class PickingMixin:
                     return
         elif self.is_rotate_mode:
             for e in entries:
-                np = e.getIntoNodePath().getParent()
-                if np.hasTag("rotate_handle"):
-                    self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
-                    return
+                np = e.getIntoNodePath()
+                while not np.isEmpty() and np != self.render:
+                    if np.hasTag("rotate_handle"):
+                        self.start_rotate_drag(np, np.getTag("rotate_axis"), np.getTag("rotate_key"))
+                        return
+                    np = np.getParent()
         elif self.is_move_mode:
             for e in entries:
                 np = e.getIntoNodePath().getParent()
@@ -165,7 +168,7 @@ class PickingMixin:
                 h['node'].removeNode()
             self.scale_handles.clear()
             for h in self.rotate_handles:
-                h['node'].removeNode()
+                h['node'].removeNode()   # removes children (col_nodes) too
             self.rotate_handles.clear()
             self._remove_selection_outline()
             self.selected_bricks = []
@@ -360,23 +363,61 @@ class PickingMixin:
         box = self.get_brick_collision_box(self.selected_brick)
         cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
         hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
-        mg = max(hw, hd, hh) * 0.05 + 0.28
+        radius = max(hw, hd, hh) + 1.8
 
-        # top/bottom → heading (H, around Z); left/right → pitch (P); front/back → roll (R)
-        defs = [
-            ((cx,      cy,      cz+hh+mg), Vec3(0, 0,  1), 'h'),
-            ((cx,      cy,      cz-hh-mg), Vec3(0, 0, -1), 'h'),
-            ((cx+hw+mg,cy,      cz      ), Vec3( 1, 0, 0), 'p'),
-            ((cx-hw-mg,cy,      cz      ), Vec3(-1, 0, 0), 'p'),
-            ((cx,      cy+hd+mg,cz      ), Vec3(0,  1, 0), 'r'),
-            ((cx,      cy-hd-mg,cz      ), Vec3(0, -1, 0), 'r'),
+        # axis, color, rot_key
+        rings = [
+            (Vec3(0, 0, 1), (0.15, 0.45, 0.95, 1), 'h'),  # Z → blue  (heading)
+            (Vec3(1, 0, 0), (0.90, 0.18, 0.18, 1), 'p'),  # X → red   (pitch)
+            (Vec3(0, 1, 0), (0.12, 0.82, 0.22, 1), 'r'),  # Y → green (roll)
         ]
-        for idx, (pos, axis, rot_key) in enumerate(defs):
-            hnp = self._make_handle(f"rotate_handle_{idx}", pos, GREEN)
-            hnp.setTag("rotate_handle", "1")
-            hnp.setTag("rotate_axis",   f"{axis.x},{axis.y},{axis.z}")
-            hnp.setTag("rotate_key",    rot_key)
-            self.rotate_handles.append({'node': hnp, 'axis': axis, 'key': rot_key})
+        SEGS     = 40   # visual resolution
+        COL_SEGS = 14   # collision spheres per ring
+        THICK    = 5.0
+
+        for axis, color, rot_key in rings:
+            ax = axis.normalized()
+            t  = Vec3(1, 0, 0) if abs(ax.x) < 0.9 else Vec3(0, 1, 0)
+            perp1 = ax.cross(t).normalized()
+            perp2 = ax.cross(perp1).normalized()
+
+            # Ring NodePath anchored at brick center in world space
+            ring_np = self.render.attachNewNode(f"rotate_ring_{rot_key}")
+            ring_np.setPos(cx, cy, cz)
+            ring_np.setTag("rotate_handle", "1")
+            ring_np.setTag("rotate_axis",   f"{axis.x},{axis.y},{axis.z}")
+            ring_np.setTag("rotate_key",    rot_key)
+
+            # Draw circle geometry in ring_np local space
+            ls = LineSegs(f"ring_{rot_key}_segs")
+            ls.setColor(*color)
+            ls.setThickness(THICK)
+            for i in range(SEGS + 1):
+                a  = 2 * math.pi * i / SEGS
+                pt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
+                if i == 0:
+                    ls.moveTo(pt)
+                else:
+                    ls.drawTo(pt)
+            ring_np.attachNewNode(ls.create())
+
+            # Collision spheres evenly spaced around the ring
+            col_nodes = []
+            for i in range(COL_SEGS):
+                a   = 2 * math.pi * i / COL_SEGS
+                cpt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
+                cnode = CollisionNode(f"ring_{rot_key}_col_{i}")
+                cnode.addSolid(CollisionSphere(0, 0, 0, 0.45))
+                cnode.setIntoCollideMask(BitMask32.bit(1))
+                cnode.setFromCollideMask(BitMask32.allOff())
+                cnp = ring_np.attachNewNode(cnode)
+                cnp.setPos(cpt)
+                col_nodes.append(cnp)
+
+            self.rotate_handles.append({
+                'node': ring_np, 'axis': axis, 'key': rot_key,
+                'col_nodes': col_nodes, 'perp1': perp1, 'perp2': perp2,
+            })
 
     # ── Rotate dragging ───────────────────────────────────────────────────
 
@@ -534,19 +575,12 @@ class PickingMixin:
                 for h, pos in zip(self.scale_handles, positions):
                     h['node'].setPos(pos)
 
-            # Rotate handles: same layout as scale but track brick's AABB
+            # Rotate ring handles: re-center on brick each frame
             if self.rotate_handles and self.selected_brick:
                 box = self.get_brick_collision_box(self.selected_brick)
                 cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
-                hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
-                mg = max(hw, hd, hh)*0.05+0.28
-                positions = [
-                    (cx, cy, cz+hh+mg), (cx, cy, cz-hh-mg),
-                    (cx+hw+mg, cy, cz), (cx-hw-mg, cy, cz),
-                    (cx, cy+hd+mg, cz), (cx, cy-hd-mg, cz),
-                ]
-                for h, pos in zip(self.rotate_handles, positions):
-                    h['node'].setPos(pos)
+                for h in self.rotate_handles:
+                    h['node'].setPos(cx, cy, cz)
 
             self._update_selection_outline()
 
