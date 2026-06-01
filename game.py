@@ -10,9 +10,11 @@ import struct
 import sys
 import time
 
-loadPrcFileData("", "win-size 1280 720")
+loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "win-origin -2 -2")
 loadPrcFileData("", "window-title PiePlex")
+loadPrcFileData("", "framebuffer-multisample 1")
+loadPrcFileData("", "multisamples 4")
 
 def _set_png_cursor(win, png_name, hotspot_x=0, hotspot_y=0):
     """Scale a PNG to the system cursor size, wrap it in a .cur container
