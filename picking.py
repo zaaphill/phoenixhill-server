@@ -1,6 +1,8 @@
 from panda3d.core import (
     CardMaker, TransparencyAttrib, CollisionNode, CollisionBox, CollisionSphere,
     BitMask32, Point3, Vec3, LineSegs, NodePath, KeyboardButton,
+    GeomVertexFormat, GeomVertexData, GeomVertexWriter,
+    Geom, GeomTriangles, GeomNode,
 )
 import math
 from direct.task import Task
@@ -354,6 +356,46 @@ class PickingMixin:
 
     # ── Rotate handles ────────────────────────────────────────────────────
 
+    def _make_torus_geom(self, rot_key, axis, perp1, perp2, radius, tube_r, color, segs=36, tube_segs=10):
+        """Build a torus GeomNode in local space (centered at origin)."""
+        fmt   = GeomVertexFormat.getV3n3c4()
+        vdata = GeomVertexData(f'torus_{rot_key}', fmt, Geom.UHStatic)
+        vw = GeomVertexWriter(vdata, 'vertex')
+        nw = GeomVertexWriter(vdata, 'normal')
+        cw = GeomVertexWriter(vdata, 'color')
+        r, g, b, a = color
+
+        for i in range(segs):
+            theta = 2 * math.pi * i / segs
+            ring_pt = perp1 * math.cos(theta) * radius + perp2 * math.sin(theta) * radius
+            radial  = (perp1 * math.cos(theta) + perp2 * math.sin(theta)).normalized()
+            ax_dir  = axis.normalized()
+            for j in range(tube_segs):
+                phi     = 2 * math.pi * j / tube_segs
+                tube_pt = ring_pt + radial * math.cos(phi) * tube_r + ax_dir * math.sin(phi) * tube_r
+                normal  = (radial * math.cos(phi) + ax_dir * math.sin(phi)).normalized()
+                vw.addData3(tube_pt.x, tube_pt.y, tube_pt.z)
+                nw.addData3(normal.x,  normal.y,  normal.z)
+                cw.addData4(r, g, b, a)
+
+        prim = GeomTriangles(Geom.UHStatic)
+        for i in range(segs):
+            i2 = (i + 1) % segs
+            for j in range(tube_segs):
+                j2 = (j + 1) % tube_segs
+                v0 = i  * tube_segs + j
+                v1 = i  * tube_segs + j2
+                v2 = i2 * tube_segs + j
+                v3 = i2 * tube_segs + j2
+                prim.addVertices(v0, v2, v1)
+                prim.addVertices(v1, v2, v3)
+
+        geom = Geom(vdata)
+        geom.addPrimitive(prim)
+        gnode = GeomNode(f'torus_{rot_key}')
+        gnode.addGeom(geom)
+        return gnode
+
     def create_rotate_handles(self):
         for h in self.rotate_handles:
             h['node'].removeNode()
@@ -364,59 +406,48 @@ class PickingMixin:
         cx, cy, cz = box['center'].x, box['center'].y, box['center'].z
         hw, hd, hh = box['half_width'], box['half_depth'], box['half_height']
         radius = max(hw, hd, hh) + 1.8
+        tube_r = 0.22   # thickness of the torus tube
 
-        # axis, color, rot_key
         rings = [
-            (Vec3(0, 0, 1), (0.15, 0.45, 0.95, 1), 'h'),  # Z → blue  (heading)
-            (Vec3(1, 0, 0), (0.90, 0.18, 0.18, 1), 'p'),  # X → red   (pitch)
-            (Vec3(0, 1, 0), (0.12, 0.82, 0.22, 1), 'r'),  # Y → green (roll)
+            (Vec3(0, 0, 1), (0.15, 0.45, 0.95, 1), 'h'),  # Z → blue
+            (Vec3(1, 0, 0), (0.90, 0.18, 0.18, 1), 'p'),  # X → red
+            (Vec3(0, 1, 0), (0.12, 0.82, 0.22, 1), 'r'),  # Y → green
         ]
-        SEGS     = 40   # visual resolution
-        COL_SEGS = 14   # collision spheres per ring
-        THICK    = 5.0
+        COL_SEGS = 32   # dense enough to cover the ring with no gaps
 
         for axis, color, rot_key in rings:
-            ax = axis.normalized()
-            t  = Vec3(1, 0, 0) if abs(ax.x) < 0.9 else Vec3(0, 1, 0)
+            ax    = axis.normalized()
+            t     = Vec3(1, 0, 0) if abs(ax.x) < 0.9 else Vec3(0, 1, 0)
             perp1 = ax.cross(t).normalized()
             perp2 = ax.cross(perp1).normalized()
 
-            # Ring NodePath anchored at brick center in world space
             ring_np = self.render.attachNewNode(f"rotate_ring_{rot_key}")
             ring_np.setPos(cx, cy, cz)
             ring_np.setTag("rotate_handle", "1")
             ring_np.setTag("rotate_axis",   f"{axis.x},{axis.y},{axis.z}")
             ring_np.setTag("rotate_key",    rot_key)
+            ring_np.setTwoSided(True)
 
-            # Draw circle geometry in ring_np local space
-            ls = LineSegs(f"ring_{rot_key}_segs")
-            ls.setColor(*color)
-            ls.setThickness(THICK)
-            for i in range(SEGS + 1):
-                a  = 2 * math.pi * i / SEGS
-                pt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
-                if i == 0:
-                    ls.moveTo(pt)
-                else:
-                    ls.drawTo(pt)
-            ring_np.attachNewNode(ls.create())
+            # Torus mesh
+            torus = self._make_torus_geom(rot_key, axis, perp1, perp2, radius, tube_r, color)
+            tnp = ring_np.attachNewNode(torus)
+            tnp.setShaderOff()
+            tnp.setLightOff()
 
-            # Collision spheres evenly spaced around the ring
-            col_nodes = []
+            # Dense collision spheres — sphere radius equals tube_r + small overlap so there are NO gaps
+            col_radius = (2 * math.pi * radius / COL_SEGS) * 0.6 + tube_r
             for i in range(COL_SEGS):
                 a   = 2 * math.pi * i / COL_SEGS
                 cpt = perp1 * math.cos(a) * radius + perp2 * math.sin(a) * radius
                 cnode = CollisionNode(f"ring_{rot_key}_col_{i}")
-                cnode.addSolid(CollisionSphere(0, 0, 0, 0.45))
+                cnode.addSolid(CollisionSphere(0, 0, 0, col_radius))
                 cnode.setIntoCollideMask(BitMask32.bit(1))
                 cnode.setFromCollideMask(BitMask32.allOff())
                 cnp = ring_np.attachNewNode(cnode)
                 cnp.setPos(cpt)
-                col_nodes.append(cnp)
 
             self.rotate_handles.append({
                 'node': ring_np, 'axis': axis, 'key': rot_key,
-                'col_nodes': col_nodes, 'perp1': perp1, 'perp2': perp2,
             })
 
     # ── Rotate dragging ───────────────────────────────────────────────────
