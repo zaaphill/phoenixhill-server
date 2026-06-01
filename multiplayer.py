@@ -853,7 +853,6 @@ class MultiplayerMixin:
                 np.setPos(*pos)
                 np.setTexture(tex)
                 np.setTwoSided(True); np.setShaderOff()
-                np.setDepthOffset(1)
                 np.setTransparency(TransparencyAttrib.MAlpha)
                 return np
 
@@ -931,7 +930,6 @@ class MultiplayerMixin:
                 np = parent.attachNewNode(node)
                 np.setPos(*pos); np.setTexture(tex)
                 np.setTwoSided(True); np.setShaderOff()
-                np.setDepthOffset(1)
                 np.setTransparency(TransparencyAttrib.MAlpha)
                 return np
 
