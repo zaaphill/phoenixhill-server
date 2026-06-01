@@ -488,18 +488,19 @@ class PickingMixin:
         else:
             delta = dx * SENS
         delta = round(delta / 5) * 5
-        print(f"[ROT_UPD] key={rot_key} dx={dx:.3f} dy={dy:.3f} delta={delta}", flush=True)
         for brick, start_hpr in self.rotate_drag_start_hpr.items():
-            in_bricks = brick in self.bricks
-            print(f"[ROT_UPD] brick in_bricks={in_bricks}", flush=True)
-            if not in_bricks:
+            if brick not in self.bricks:
                 continue
+            before = brick.getHpr()
             if rot_key == 'h':
                 brick.setHpr(start_hpr.x + delta, start_hpr.y, start_hpr.z)
             elif rot_key == 'p':
                 brick.setHpr(start_hpr.x, start_hpr.y + delta, start_hpr.z)
             else:
                 brick.setHpr(start_hpr.x, start_hpr.y, start_hpr.z + delta)
+            after = brick.getHpr()
+            if delta != 0:
+                print(f"[ROT_UPD] key={rot_key} delta={delta} before={tuple(round(v,1) for v in before)} after={tuple(round(v,1) for v in after)}", flush=True)
             if brick in self.brick_hitbox_visuals:
                 self.update_brick_hitbox_visual_scale(brick, self.brick_hitbox_visuals[brick])
 
@@ -630,10 +631,8 @@ class PickingMixin:
             self.update_drag()
         if self.scale_dragging and self.drag_handle and self.selected_brick:
             self.update_scale_drag()
-        if self.rotate_dragging:
-            print(f"[ROT_TASK] dragging={self.rotate_dragging} handle={bool(self.rotate_drag_handle)} brick={bool(self.selected_brick)}", flush=True)
-            if self.rotate_drag_handle and self.selected_brick:
-                self.update_rotate_drag()
+        if self.rotate_dragging and self.rotate_drag_handle and self.selected_brick:
+            self.update_rotate_drag()
         return Task.cont
 
     # ── Move dragging ─────────────────────────────────────────────────────
