@@ -45,10 +45,13 @@ class PickingMixin:
                     return
         elif self.is_rotate_mode:
             col_map = getattr(self, '_rotate_col_map', {})
+            print(f"[ROT] col_map size={len(col_map)} entries={len(entries)}", flush=True)
             for e in entries:
                 name = e.getIntoNodePath().getName()
+                print(f"[ROT] checking name={name!r} in_map={name in col_map}", flush=True)
                 if name in col_map:
                     axis_str, rot_key = col_map[name]
+                    print(f"[ROT] MATCH → start_rotate_drag axis={axis_str} key={rot_key}", flush=True)
                     self.start_rotate_drag(e.getIntoNodePath(), axis_str, rot_key)
                     return
         elif self.is_move_mode:
@@ -457,10 +460,12 @@ class PickingMixin:
     # ── Rotate dragging ───────────────────────────────────────────────────
 
     def start_rotate_drag(self, handle_np, axis_str, rot_key):
+        print(f"[ROT_START] axis={axis_str} key={rot_key} selected_bricks={len(self.selected_bricks)}", flush=True)
         ax = [float(v) for v in axis_str.split(",")]
         self.rotate_dragging    = True
         self.rotate_drag_handle = {'node': handle_np, 'axis': Vec3(*ax), 'key': rot_key}
         self.rotate_drag_start_hpr = {b: Vec3(b.getHpr()) for b in self.selected_bricks}
+        print(f"[ROT_START] dragging={self.rotate_dragging} hpr_map={len(self.rotate_drag_start_hpr)}", flush=True)
         if self.mouseWatcherNode.hasMouse():
             m = self.mouseWatcherNode.getMouse()
             self.rotate_drag_start_mpos = (m.getX(), m.getY())
@@ -469,23 +474,25 @@ class PickingMixin:
 
     def update_rotate_drag(self):
         if not self.rotate_drag_handle or not self.rotate_drag_start_hpr:
+            print(f"[ROT_UPD] early exit handle={bool(self.rotate_drag_handle)} hpr={bool(self.rotate_drag_start_hpr)}", flush=True)
             return
         if not self.mouseWatcherNode.hasMouse():
             return
         m  = self.mouseWatcherNode.getMouse()
         dx = m.getX() - self.rotate_drag_start_mpos[0]
         dy = m.getY() - self.rotate_drag_start_mpos[1]
-        SENS = 270.0  # degrees per screen-width of drag
+        SENS = 270.0
         rot_key = self.rotate_drag_handle['key']
-        # H (yaw): drag left/right;  P (pitch): drag up/down;  R (roll): drag left/right
         if rot_key == 'p':
             delta = dy * SENS
         else:
             delta = dx * SENS
-        # Snap to 5-degree grid
         delta = round(delta / 5) * 5
+        print(f"[ROT_UPD] key={rot_key} dx={dx:.3f} dy={dy:.3f} delta={delta}", flush=True)
         for brick, start_hpr in self.rotate_drag_start_hpr.items():
-            if brick not in self.bricks:
+            in_bricks = brick in self.bricks
+            print(f"[ROT_UPD] brick in_bricks={in_bricks}", flush=True)
+            if not in_bricks:
                 continue
             if rot_key == 'h':
                 brick.setHpr(start_hpr.x + delta, start_hpr.y, start_hpr.z)
@@ -623,8 +630,10 @@ class PickingMixin:
             self.update_drag()
         if self.scale_dragging and self.drag_handle and self.selected_brick:
             self.update_scale_drag()
-        if self.rotate_dragging and self.rotate_drag_handle and self.selected_brick:
-            self.update_rotate_drag()
+        if self.rotate_dragging:
+            print(f"[ROT_TASK] dragging={self.rotate_dragging} handle={bool(self.rotate_drag_handle)} brick={bool(self.selected_brick)}", flush=True)
+            if self.rotate_drag_handle and self.selected_brick:
+                self.update_rotate_drag()
         return Task.cont
 
     # ── Move dragging ─────────────────────────────────────────────────────
