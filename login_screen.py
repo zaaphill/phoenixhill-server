@@ -1302,27 +1302,13 @@ class LoginScreenMixin:
                 relief=1,
                 command=_make_cat_cmd(cat_val),
             )
-        _SEARCH_BG  = (0.93, 0.91, 0.97, 1.0)
-        _SEARCH_BD  = (0.55, 0.45, 0.72, 1.0)
-        _SEARCH_FG  = (0.15, 0.10, 0.25, 1.0)
-        DirectFrame(
-            frameColor=_SEARCH_BD,
-            frameSize=(-0.275, 0.275, -0.030, 0.030),
-            parent=bg, pos=(1.47, 0, 0.800),
-        )
-        DirectLabel(
-            text="🔍",
-            text_fg=_SEARCH_FG, text_scale=0.022,
-            frameColor=_SEARCH_BG,
-            frameSize=(-0.028, 0.028, -0.025, 0.025),
-            parent=bg, pos=(1.225, 0, 0.800),
-        )
         _sse = DirectEntry(
             text="", initialText=self._shop_search or "Search...",
-            width=10, numLines=1, scale=0.026,
-            text_fg=_SEARCH_FG, frameColor=_SEARCH_BG,
-            frameSize=(0, 0.48, -0.024, 0.024),
-            parent=bg, pos=(1.255, 0, 0.791),
+            width=13, numLines=1, scale=0.026,
+            text_fg=(0.15, 0.10, 0.25, 1),
+            frameColor=(0.93, 0.91, 0.97, 1),
+            relief=1,
+            parent=bg, pos=(1.22, 0, 0.790),
             command=self._on_shop_search,
         )
         self._shop_search_entry = _sse
@@ -3264,27 +3250,13 @@ class LoginScreenMixin:
             parent=bg, pos=(1.65, 0, 0.757),
             relief=1, command=self._build_browse_screen,
         )
-        _SEARCH_BG  = (0.93, 0.91, 0.97, 1.0)
-        _SEARCH_BD  = (0.55, 0.45, 0.72, 1.0)
-        _SEARCH_FG  = (0.15, 0.10, 0.25, 1.0)
-        DirectFrame(
-            frameColor=_SEARCH_BD,
-            frameSize=(-0.295, 0.295, -0.033, 0.033),
-            parent=bg, pos=(1.05, 0, 0.757),
-        )
-        DirectLabel(
-            text="🔍",
-            text_fg=_SEARCH_FG, text_scale=0.024,
-            frameColor=_SEARCH_BG,
-            frameSize=(-0.030, 0.030, -0.028, 0.028),
-            parent=bg, pos=(0.790, 0, 0.757),
-        )
         _bse = DirectEntry(
             text="", initialText=self._browse_search or "Search...",
-            width=11, numLines=1, scale=0.026,
-            text_fg=_SEARCH_FG, frameColor=_SEARCH_BG,
-            frameSize=(0, 0.52, -0.026, 0.026),
-            parent=bg, pos=(0.820, 0, 0.746),
+            width=14, numLines=1, scale=0.028,
+            text_fg=(0.15, 0.10, 0.25, 1),
+            frameColor=(0.93, 0.91, 0.97, 1),
+            relief=1,
+            parent=bg, pos=(0.76, 0, 0.745),
             command=self._on_game_search,
         )
         self._browse_search_entry = _bse
