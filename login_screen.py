@@ -1604,6 +1604,140 @@ class LoginScreenMixin:
 
         return result
 
+    def _render_hat_thumbnails(self, items, buf_w=512, buf_h=512):
+        """RTT-render one avatar+hat frame per item using the player's skin colors."""
+        import json as _json, base64 as _b64, tempfile, os as _os, shutil
+
+        items_with_data = []
+        for it in items:
+            hd_json = self._item_hat_data_json(it)
+            if hd_json:
+                items_with_data.append((it["id"], hd_json))
+        if not items_with_data:
+            return {}
+
+        result = {}
+        PMASK = BitMask32.bit(6)
+        BUF_W, BUF_H = buf_w, buf_h
+
+        _DEFAULTS = {
+            "head":      (244/255, 204/255,  67/255, 1),
+            "torso":     ( 23/255, 107/255, 170/255, 1),
+            "left_arm":  (244/255, 204/255,  67/255, 1),
+            "right_arm": (244/255, 204/255,  67/255, 1),
+            "left_leg":  (165/255, 188/255,  80/255, 1),
+            "right_leg": (165/255, 188/255,  80/255, 1),
+        }
+        colors = getattr(self, "_avatar_colors", None) or self.load_avatar_colors()
+
+        rig = self.render.attachNewNode("hat_thumb_root")
+        rig.setPos(0, 3000, 0)
+
+        def box(parent, scale, pos, key):
+            m = self.loader.loadModel("models/box")
+            m.reparentTo(parent); m.setScale(*scale); m.setPos(*pos)
+            m.setColor(*colors.get(key, _DEFAULTS[key]))
+            m.setTextureOff(1); m.show(PMASK); return m
+
+        box(rig, (2, 1, 2), (-1, -0.5, 2), "torso")
+        la = rig.attachNewNode("la"); la.setPos(-1.5, 0, 4)
+        box(la, (1, 1, 2), (-0.5, -0.5, -2), "left_arm")
+        ra = rig.attachNewNode("ra"); ra.setPos(1.5, 0, 4)
+        box(ra, (1, 1, 2), (-0.5, -0.5, -2), "right_arm")
+        ll = rig.attachNewNode("ll"); ll.setPos(-0.5, 0, 2)
+        box(ll, (1, 1, 2), (-0.5, -0.5, -2), "left_leg")
+        rl = rig.attachNewNode("rl"); rl.setPos(0.5, 0, 2)
+        box(rl, (1, 1, 2), (-0.5, -0.5, -2), "right_leg")
+
+        head_anchor = rig.attachNewNode("head_anchor")
+        head_anchor.setPos(0, 0, 4.55)
+        head_cyl = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+        head_cyl.reparentTo(head_anchor)
+        head_cyl.setColor(*colors.get("head", _DEFAULTS["head"]))
+        head_cyl.setTwoSided(True); head_cyl.setTextureOff(1); head_cyl.setShaderOff()
+        head_cyl.show(PMASK)
+
+        al = AmbientLight("ht_al"); al.setColor(LColor(0.22, 0.22, 0.25, 1))
+        rig.setLight(rig.attachNewNode(al))
+        dl = DirectionalLight("ht_dl"); dl.setColor(LColor(0.50, 0.50, 0.52, 1))
+        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20, 15, 0)
+        rig.setLight(dlnp)
+
+        buf = self.win.makeTextureBuffer("hat_thumb_buf", BUF_W, BUF_H)
+        buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0))
+        buf.setClearColorActive(True)
+
+        _aspect = BUF_W / BUF_H
+        camNode = Camera("hat_thumb_cam")
+        lens = PerspectiveLens()
+        lens.setFov(32.0); lens.setAspectRatio(_aspect); lens.setNearFar(0.1, 10000)
+        camNode.setLens(lens); camNode.setCameraMask(PMASK)
+        cam_np = self.render.attachNewNode(camNode)
+        cam_np.setPos(0, 3000 - 12, 3.3)
+        cam_np.lookAt(Point3(0, 3000, 3.3))
+        dr = buf.makeDisplayRegion(0, 1, 0, 1); dr.setSort(10); dr.setCamera(cam_np)
+
+        orig_mask = self.camNode.getCameraMask()
+        self.camNode.setCameraMask(orig_mask & ~PMASK)
+        self.graphicsEngine.renderFrame()
+
+        hat_node = [None]
+
+        def _load_hat(hd_json):
+            if hat_node[0] and not hat_node[0].isEmpty():
+                hat_node[0].removeNode(); hat_node[0] = None
+            try:
+                data = _json.loads(hd_json)
+                tmp_dir = tempfile.mkdtemp(prefix="phx_hat_th_")
+                obj_tmp = _os.path.join(tmp_dir, "hat.obj")
+                with open(obj_tmp, 'wb') as f:
+                    f.write(_b64.b64decode(data["obj_b64"]))
+                mtl_b64 = data.get("mtl_b64")
+                if mtl_b64:
+                    mtl_name = data.get("mtl_name") or "hat.mtl"
+                    with open(_os.path.join(tmp_dir, mtl_name), 'wb') as f:
+                        f.write(_b64.b64decode(mtl_b64))
+                model = self.loader.loadModel(Filename.fromOsSpecific(obj_tmp))
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                if not model:
+                    return
+                model.setR(-90)
+                tex_b64 = data.get("texture_b64")
+                if tex_b64:
+                    raw = _b64.b64decode(tex_b64); ss = StringStream(raw); pnm = PNMImage()
+                    if pnm.read(ss):
+                        tex = Texture(); tex.load(pnm); model.setTexture(tex, 1)
+                bs = data.get("brick_scale", [2, 2, 2])
+                ms = data.get("model_scale", [1, 1, 1])
+                model.setScale(*[bs[i] * ms[i] for i in range(3)])
+                model.setHpr(*data.get("model_hpr", [0, 0, -90]))
+                model.setShaderOff(); model.setTwoSided(True)
+                model.reparentTo(head_anchor)
+                model.setPos(0, 0, 0.55 + float(data.get("z_offset", 0.0)))
+                model.show(PMASK)
+                hat_node[0] = model
+            except Exception as e:
+                print(f"[HAT_THUMB] load error: {e}", flush=True)
+
+        for item_id, hd_json in items_with_data:
+            _load_hat(hd_json)
+            self.graphicsEngine.renderFrame()
+            rtex = buf.getTexture()
+            self.graphicsEngine.extractTextureData(rtex, self.win.getGsg())
+            pnm = PNMImage()
+            if rtex.store(pnm):
+                out_tex = Texture(); out_tex.load(pnm)
+                out_tex.setMagfilter(Texture.FTLinear)
+                out_tex.setMinfilter(Texture.FTLinearMipmapLinear)
+                result[item_id] = out_tex
+
+        if hat_node[0] and not hat_node[0].isEmpty():
+            hat_node[0].removeNode()
+        self.graphicsEngine.removeWindow(buf)
+        cam_np.removeNode(); rig.removeNode()
+        self.camNode.setCameraMask(orig_mask)
+        return result
+
     def _render_shirt_thumbnails(self, items, buf_w=512, buf_h=512):
         """RTT-render one avatar+shirt frame per item; returns {item_id: Texture}."""
         import base64 as _b64
@@ -1762,21 +1896,12 @@ class LoginScreenMixin:
                 thumb_textures.update(self._render_shop_thumbnails(pants_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] pants RTT failed: {e}", flush=True)
-        import base64 as _b64
-        # Hat thumbnails
-        for it in hat_items:
-            iid  = it.get("id")
-            idat = self._item_thumbnail(it)
-            if iid and idat:
-                try:
-                    raw = _b64.b64decode(idat); ss = StringStream(raw); pnm = PNMImage()
-                    if pnm.read(ss):
-                        tex = Texture(); tex.load(pnm)
-                        tex.setMagfilter(Texture.FTLinear)
-                        tex.setMinfilter(Texture.FTLinearMipmapLinear)
-                        thumb_textures[iid] = tex
-                except Exception:
-                    pass
+        # Hat thumbnails — RTT-rendered with player's skin colors
+        try:
+            if hat_items:
+                thumb_textures.update(self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512))
+        except Exception as e:
+            print(f"[SHOP_THUMB] hat RTT failed: {e}", flush=True)
         self._shop_thumb_textures = thumb_textures
         self._shop_page = 0
         self._draw_shop_grid(items, frame, thumb_textures)
