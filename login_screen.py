@@ -1285,7 +1285,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.038, 0.038),
             parent=bg, pos=(0, 0, 0.802),
         )
-        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Hats", "hat"), ("Shirts", "shirt"), ("Pants", "pants")]):
+        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Shirts", "shirt"), ("Pants", "pants"), ("Hats", "hat")]):
             is_on = (cat_val == self._shop_cat_filter)
             def _make_cat_cmd(v):
                 def _cmd():
