@@ -93,6 +93,10 @@ class LoginScreenMixin:
         return "|PANTSDATA|" in (item.get("image_data") or "")
 
     @staticmethod
+    def _item_is_face(item):
+        return "|FACEDATA|" in (item.get("image_data") or "")
+
+    @staticmethod
     def _item_shirt_b64(item):
         """Return the raw template base64, stripped of the |SHIRTDATA| marker."""
         img = item.get("image_data") or ""
@@ -105,6 +109,10 @@ class LoginScreenMixin:
             return img.split("|HATDATA|")[0]
         if "|SHIRTDATA|" in img:
             return img.split("|SHIRTDATA|")[0]
+        if "|PANTSDATA|" in img:
+            return img.split("|PANTSDATA|")[0]
+        if "|FACEDATA|" in img:
+            return img.split("|FACEDATA|")[0]
         return img
 
     @staticmethod
@@ -128,6 +136,7 @@ class LoginScreenMixin:
         self._is_play_only     = False
         self._equipped_tshirt_id = None
         self._equipped_hat_id    = None
+        self._equipped_face_id   = None
 
         self._hide_studio_ui()
         self._show_startup_splash()
@@ -369,6 +378,8 @@ class LoginScreenMixin:
             print(f"[SHIRT_DBG] _sync_avatar: server equipped_shirt={eq_shirt} -> _equipped_shirt_id={self._equipped_shirt_id}", flush=True)
             eq_pants = (av_res or {}).get("equipped_pants")
             self._equipped_pants_id = int(eq_pants) if eq_pants is not None else None
+            eq_face = (av_res or {}).get("equipped_face")
+            self._equipped_face_id = int(eq_face) if eq_face is not None else None
             local = self.load_avatar_colors(username)
             if server_colors and isinstance(server_colors, dict):
                 for part in list(local.keys()):
@@ -383,15 +394,15 @@ class LoginScreenMixin:
             print(f"[Avatar] server sync: {e}")
 
     def _apply_equipped_items_bg(self):
-        """Background-fetch equipped tshirt/hat/shirt data and apply them to the character."""
+        """Background-fetch equipped tshirt/hat/shirt/face data and apply them to the character."""
         import auth_client as _ac
         equipped_tshirt = getattr(self, '_equipped_tshirt_id', None)
         equipped_hat    = getattr(self, '_equipped_hat_id',    None)
         equipped_shirt  = getattr(self, '_equipped_shirt_id',  None)
-
         equipped_pants  = getattr(self, '_equipped_pants_id',  None)
+        equipped_face   = getattr(self, '_equipped_face_id',   None)
         print(f"[SHIRT_DBG] _apply_equipped_items_bg: sh_id={equipped_shirt}", flush=True)
-        def worker(ts_id=equipped_tshirt, hat_id=equipped_hat, sh_id=equipped_shirt, pt_id=equipped_pants):
+        def worker(ts_id=equipped_tshirt, hat_id=equipped_hat, sh_id=equipped_shirt, pt_id=equipped_pants, fc_id=equipped_face):
             print(f"[SHIRT_DBG] worker thread: sh_id={sh_id}", flush=True)
             if ts_id:
                 full, _ = _ac.get_shop_item(ts_id)
@@ -432,6 +443,16 @@ class LoginScreenMixin:
                             self.apply_pants(_b)
                         return task.done
                     self.taskMgr.doMethodLater(0, _apply_pt, "_loginApplyPants", appendTask=True)
+            if fc_id:
+                full, _ = _ac.get_shop_item(fc_id)
+                if full and full.get("image_data") and "|FACEDATA|" in full["image_data"]:
+                    frames_part = full["image_data"].split("|FACEDATA|", 1)[1]
+                    frames_b64  = [f for f in frames_part.split(",") if f]
+                    def _apply_fc(task, _frames=frames_b64):
+                        if hasattr(self, "apply_face"):
+                            self.apply_face(_frames)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply_fc, "_loginApplyFace", appendTask=True)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -754,6 +775,7 @@ class LoginScreenMixin:
     # ── Main menu ──────────────────────────────────────────────────────────
 
     def _build_main_menu(self):
+        self._music_fade_in()
         self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
@@ -846,6 +868,15 @@ class LoginScreenMixin:
             parent=bg, pos=(1.55, 0, 0.550),
             command=self._show_upload_pants_dialog, relief=1,
         )
+        if getattr(self, "_session_username", None) == "bob":
+            DirectButton(
+                text="Upload Face",
+                text_fg=_RS_WHITE, text_scale=0.026,
+                frameColor=_RS_BORDER,
+                frameSize=(-0.130, 0.130, -0.030, 0.030),
+                parent=bg, pos=(1.55, 0, 0.481),
+                command=self._show_upload_face_dialog, relief=1,
+            )
         # ── Build list ──────────────────────────────────────────────────────
         self._build_list_frame = DirectFrame(
             frameColor=(0, 0, 0, 0),
@@ -1285,7 +1316,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.038, 0.038),
             parent=bg, pos=(0, 0, 0.802),
         )
-        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Shirts", "shirt"), ("Pants", "pants"), ("Hats", "hat")]):
+        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Shirts", "shirt"), ("Pants", "pants"), ("Hats", "hat"), ("Face", "face")]):
             is_on = (cat_val == self._shop_cat_filter)
             def _make_cat_cmd(v):
                 def _cmd():
@@ -1294,11 +1325,11 @@ class LoginScreenMixin:
                 return _cmd
             DirectButton(
                 text=cat_lbl,
-                text_fg=_RS_WHITE, text_scale=0.026,
+                text_fg=_RS_WHITE, text_scale=0.022,
                 frameColor=_TAB_ON if is_on else _TAB_OFF,
-                frameSize=(-0.100, 0.100, -0.028, 0.028),
+                frameSize=(-0.082, 0.082, -0.028, 0.028),
                 parent=bg,
-                pos=(-0.72 + ci * 0.36, 0, 0.800),
+                pos=(-0.85 + ci * 0.34, 0, 0.800),
                 relief=1,
                 command=_make_cat_cmd(cat_val),
             )
@@ -1373,10 +1404,13 @@ class LoginScreenMixin:
             items = [it for it in all_items if self._item_is_shirt(it)]
         elif cat == "pants":
             items = [it for it in all_items if self._item_is_pants(it)]
+        elif cat == "face":
+            items = [it for it in all_items if self._item_is_face(it)]
         else:
             items = [it for it in all_items if not self._item_is_hat(it)
                      and not self._item_is_shirt(it)
-                     and not self._item_is_pants(it)]
+                     and not self._item_is_pants(it)
+                     and not self._item_is_face(it)]
         owned_result, _ = auth_client.get_owned_items(self._session_token)
         owned = {it["id"] for it in (owned_result or {}).get("items", [])}
         self.taskMgr.doMethodLater(
@@ -1414,8 +1448,10 @@ class LoginScreenMixin:
             "left_leg":  (165/255, 188/255,  80/255, 1),
             "right_leg": (165/255, 188/255,  80/255, 1),
         }
-        # Use the player's own avatar colors so the thumbnail reflects their look.
-        colors = getattr(self, "_avatar_colors", None) or self.load_avatar_colors()
+        # Fixed neutral grey for all shop thumbnails so they look the same
+        # for every player and the clothing is the focus, not skin colour.
+        _GREY  = (0.72, 0.72, 0.72, 1)
+        colors = {k: _GREY for k in ("head","torso","left_arm","right_arm","left_leg","right_leg")}
 
         # ── Avatar rig parked far from the game world ──────────────────────────
         rig = self.render.attachNewNode("shop_thumb_root")
@@ -1618,7 +1654,7 @@ class LoginScreenMixin:
         return result
 
     def _render_hat_thumbnails(self, items, buf_w=512, buf_h=512):
-        """RTT-render one avatar+hat frame per item using the player's skin colors."""
+        """RTT-render each hat model alone — no mannequin, close-up framing."""
         import json as _json, base64 as _b64, tempfile, os as _os, shutil
 
         items_with_data = []
@@ -1630,50 +1666,19 @@ class LoginScreenMixin:
             return {}
 
         result = {}
-        PMASK = BitMask32.bit(6)
+        PMASK  = BitMask32.bit(6)
         BUF_W, BUF_H = buf_w, buf_h
 
-        _DEFAULTS = {
-            "head":      (244/255, 204/255,  67/255, 1),
-            "torso":     ( 23/255, 107/255, 170/255, 1),
-            "left_arm":  (244/255, 204/255,  67/255, 1),
-            "right_arm": (244/255, 204/255,  67/255, 1),
-            "left_leg":  (165/255, 188/255,  80/255, 1),
-            "right_leg": (165/255, 188/255,  80/255, 1),
-        }
-        colors = getattr(self, "_avatar_colors", None) or self.load_avatar_colors()
-
+        # Minimal scene — just the hat, no avatar body parts.
         rig = self.render.attachNewNode("hat_thumb_root")
         rig.setPos(0, 3000, 0)
+        hat_anchor = rig.attachNewNode("hat_anchor")
+        hat_anchor.setPos(0, 0, 0)
 
-        def box(parent, scale, pos, key):
-            m = self.loader.loadModel("models/box")
-            m.reparentTo(parent); m.setScale(*scale); m.setPos(*pos)
-            m.setColor(*colors.get(key, _DEFAULTS[key]))
-            m.setTextureOff(1); m.show(PMASK); return m
-
-        box(rig, (2, 1, 2), (-1, -0.5, 2), "torso")
-        la = rig.attachNewNode("la"); la.setPos(-1.5, 0, 4)
-        box(la, (1, 1, 2), (-0.5, -0.5, -2), "left_arm")
-        ra = rig.attachNewNode("ra"); ra.setPos(1.5, 0, 4)
-        box(ra, (1, 1, 2), (-0.5, -0.5, -2), "right_arm")
-        ll = rig.attachNewNode("ll"); ll.setPos(-0.5, 0, 2)
-        box(ll, (1, 1, 2), (-0.5, -0.5, -2), "left_leg")
-        rl = rig.attachNewNode("rl"); rl.setPos(0.5, 0, 2)
-        box(rl, (1, 1, 2), (-0.5, -0.5, -2), "right_leg")
-
-        head_anchor = rig.attachNewNode("head_anchor")
-        head_anchor.setPos(0, 0, 4.55)
-        head_cyl = self.create_cylinder(radius=0.7, height=1.1, segments=16)
-        head_cyl.reparentTo(head_anchor)
-        head_cyl.setColor(*colors.get("head", _DEFAULTS["head"]))
-        head_cyl.setTwoSided(True); head_cyl.setTextureOff(1); head_cyl.setShaderOff()
-        head_cyl.show(PMASK)
-
-        al = AmbientLight("ht_al"); al.setColor(LColor(0.22, 0.22, 0.25, 1))
+        al = AmbientLight("ht_al"); al.setColor(LColor(0.30, 0.30, 0.32, 1))
         rig.setLight(rig.attachNewNode(al))
-        dl = DirectionalLight("ht_dl"); dl.setColor(LColor(0.50, 0.50, 0.52, 1))
-        dlnp = rig.attachNewNode(dl); dlnp.setHpr(20, 15, 0)
+        dl = DirectionalLight("ht_dl"); dl.setColor(LColor(0.70, 0.70, 0.72, 1))
+        dlnp = rig.attachNewNode(dl); dlnp.setHpr(25, -30, 0)
         rig.setLight(dlnp)
 
         buf = self.win.makeTextureBuffer("hat_thumb_buf", BUF_W, BUF_H)
@@ -1683,11 +1688,12 @@ class LoginScreenMixin:
         _aspect = BUF_W / BUF_H
         camNode = Camera("hat_thumb_cam")
         lens = PerspectiveLens()
-        lens.setFov(32.0); lens.setAspectRatio(_aspect); lens.setNearFar(0.1, 10000)
+        # Close-up: camera 5 units in front of the hat anchor, centred on it.
+        lens.setFov(42.0); lens.setAspectRatio(_aspect); lens.setNearFar(0.1, 10000)
         camNode.setLens(lens); camNode.setCameraMask(PMASK)
         cam_np = self.render.attachNewNode(camNode)
-        cam_np.setPos(0, 3000 - 12, 3.3)
-        cam_np.lookAt(Point3(0, 3000, 3.3))
+        cam_np.setPos(0, 3000 - 5, 0)
+        cam_np.lookAt(Point3(0, 3000, 1.2))
         dr = buf.makeDisplayRegion(0, 1, 0, 1); dr.setSort(10); dr.setCamera(cam_np)
 
         orig_mask = self.camNode.getCameraMask()
@@ -1725,8 +1731,9 @@ class LoginScreenMixin:
                 model.setScale(*[bs[i] * ms[i] for i in range(3)])
                 model.setHpr(*data.get("model_hpr", [0, 0, -90]))
                 model.setShaderOff(); model.setTwoSided(True)
-                model.reparentTo(head_anchor)
-                model.setPos(0, 0, 0.55 + float(data.get("z_offset", 0.0)))
+                model.reparentTo(hat_anchor)
+                # Centre hat at the anchor; z_offset shifts vertically if needed.
+                model.setPos(0, 0, float(data.get("z_offset", 0.0)))
                 model.show(PMASK)
                 hat_node[0] = model
             except Exception as e:
@@ -1914,9 +1921,11 @@ class LoginScreenMixin:
         hat_items    = [it for it in to_render if self._item_is_hat(it)]
         shirt_items  = [it for it in to_render if self._item_is_shirt(it)]
         pants_items  = [it for it in to_render if self._item_is_pants(it)]
+        face_items   = [it for it in to_render if self._item_is_face(it)]
         tshirt_items = [it for it in to_render if not self._item_is_hat(it)
                         and not self._item_is_shirt(it)
-                        and not self._item_is_pants(it) and it.get("image_data")]
+                        and not self._item_is_pants(it)
+                        and not self._item_is_face(it) and it.get("image_data")]
         try:
             if tshirt_items:
                 cache.update(self._render_shop_thumbnails(tshirt_items, buf_w=512, buf_h=512))
@@ -1937,6 +1946,11 @@ class LoginScreenMixin:
                 cache.update(self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512))
         except Exception as e:
             print(f"[SHOP_THUMB] hat RTT failed: {e}", flush=True)
+        try:
+            if face_items:
+                cache.update(self._render_face_thumbnails(face_items))
+        except Exception as e:
+            print(f"[SHOP_THUMB] face thumb failed: {e}", flush=True)
         thumb_frames = getattr(self, "_shop_thumb_frames", {})
         for it in to_render:
             iid = it.get("id")
@@ -1949,6 +1963,41 @@ class LoginScreenMixin:
                 except Exception:
                     pass
         return task.done
+
+    def _render_face_thumbnails(self, items):
+        """Decode the first frame PNG from face items, composite onto white, return {item_id: Texture}."""
+        import base64 as _b64
+        from panda3d.core import Texture, PNMImage, StringStream
+        result = {}
+        for it in items:
+            iid = it.get("id")
+            img = it.get("image_data") or ""
+            if "|FACEDATA|" not in img:
+                continue
+            try:
+                thumb_b64 = img.split("|FACEDATA|")[0]
+                raw = _b64.b64decode(thumb_b64)
+                face = PNMImage()
+                face.read(StringStream(raw), "face.png")
+                w, h = face.getXSize(), face.getYSize()
+                if w == 0 or h == 0:
+                    continue
+                # White background, same size
+                bg = PNMImage(w, h)
+                bg.fill(1, 1, 1)
+                bg.alphaFill(1)
+                if face.hasAlpha():
+                    bg.blendSubImage(face, 0, 0)
+                else:
+                    bg.copySubImage(face, 0, 0)
+                tex = Texture()
+                tex.load(bg)
+                tex.setMagfilter(Texture.FTLinear)
+                tex.setMinfilter(Texture.FTLinear)
+                result[iid] = tex
+            except Exception as e:
+                print(f"[FACE_THUMB] item {iid}: {e}", flush=True)
+        return result
 
     def _on_shop_search(self, text):
         self._shop_search = text.strip()
@@ -2171,17 +2220,25 @@ class LoginScreenMixin:
             )
 
         _popup_is_hat  = self._item_is_hat(item_summary)
+        _popup_is_face = self._item_is_face(item_summary)
         # For shirts keep the full image_data (with |SHIRTDATA|) so RTT can detect it
         _popup_img_raw = item_summary.get("image_data") or ""
         _popup_b64     = self._item_thumbnail(item_summary)  # hat/tshirt path (stripped)
 
-        def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _img_raw=_popup_img_raw,
+        def _apply_popup_thumb(task, _is_hat=_popup_is_hat, _is_face=_popup_is_face,
+                               _img_raw=_popup_img_raw,
                                _b64=_popup_b64, frm=img_frame, _id=item_id,
                                _item=item_summary):
             if not frm or frm.isEmpty():
                 return task.done
             try:
-                if _is_hat:
+                if _is_face:
+                    textures = self._render_face_thumbnails([_item])
+                    rtt = textures.get(_id)
+                    if rtt:
+                        frm["frameTexture"] = rtt
+                        frm["frameColor"]   = (1, 1, 1, 1)
+                elif _is_hat:
                     textures = self._render_hat_thumbnails(
                         [_item], buf_w=256, buf_h=256)
                     rtt = textures.get(_id)
@@ -2656,6 +2713,62 @@ class LoginScreenMixin:
         DirectButton(text="Cancel", text_fg=_RS_GRAY, text_scale=0.028,
                      frameColor=_RS_BORDER, frameSize=(-0.12, 0.12, -0.034, 0.034),
                      parent=card, pos=(0.34, 0, -0.48), relief=1, command=_cancel)
+
+    def _show_upload_face_dialog(self):
+        """Bob-only: pick 3 PNG frames and upload a face item."""
+        import tkinter as tk
+        from tkinter import filedialog
+        import base64 as _b64, threading
+
+        token = getattr(self, '_session_token', None)
+        if not token:
+            return
+
+        root = tk.Tk(); root.withdraw()
+        paths = filedialog.askopenfilenames(
+            title="Pick 3 face frames (select in order: frame1, frame2, frame3)",
+            filetypes=[("PNG images", "*.png"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not paths or len(paths) < 1:
+            return
+
+        frames_b64 = []
+        for p in list(paths)[:3]:
+            with open(p, "rb") as fh:
+                raw = fh.read()
+                b64str = _b64.b64encode(raw).decode()
+                print(f"[FACE_UPLOAD] file={p} raw_len={len(raw)} b64_len={len(b64str)} first32={raw[:32]}", flush=True)
+                frames_b64.append(b64str)
+
+        # Pad to 3 frames by repeating the last one
+        while len(frames_b64) < 3:
+            frames_b64.append(frames_b64[-1])
+
+        # Thumbnail = first frame; payload = thumbnail|FACEDATA|f1,f2,f3
+        thumbnail_b64 = frames_b64[0]
+        payload_str   = ",".join(frames_b64)
+        image_data    = thumbnail_b64 + "|FACEDATA|" + payload_str
+        print(f"[FACE_UPLOAD] total image_data len={len(image_data)}", flush=True)
+
+        # Name dialog
+        name_root = tk.Tk(); name_root.withdraw()
+        import tkinter.simpledialog as _sd
+        item_name = _sd.askstring("Face name", "Enter face item name:",
+                                   parent=name_root) or "Custom Face"
+        name_root.destroy()
+
+        def _upload():
+            result, err = auth_client.upload_shop_item(
+                token, item_name, "", 0, image_data, category="tshirt")
+            if result:
+                print(f"[FACE_UPLOAD] OK id={result.get('id')}", flush=True)
+                self.taskMgr.doMethodLater(
+                    0, lambda t: (self._build_avatar_screen("items", "face"), t.done)[1],
+                    "_faceUploadRefresh", appendTask=True)
+            else:
+                print(f"[FACE_UPLOAD] error: {err}", flush=True)
+        threading.Thread(target=_upload, daemon=True).start()
 
     def _show_upload_hat_from_menu(self):
         """Open a file dialog to pick an OBJ, then show the hat upload dialog."""
@@ -3175,9 +3288,73 @@ class LoginScreenMixin:
         row_stepper("Render distance  (units)", '_settings_render_distance',
                     min_val=100, max_val=1000, step=50)
 
+    # ── Theme music ────────────────────────────────────────────────────────
+
+    def _ensure_theme_music(self):
+        if getattr(self, '_theme_music', None) is None:
+            try:
+                import os as _os
+                from panda3d.core import Filename
+                path = Filename.fromOsSpecific(
+                    _os.path.join(_os.getcwd(), "PiePlex theme.mp3"))
+                m = self.loader.loadMusic(path)
+                if m:
+                    m.setLoop(True)
+                    m.setVolume(0.0)
+                    print("[MUSIC] loaded OK")
+                else:
+                    print("[MUSIC] loadMusic returned None")
+                self._theme_music   = m
+                self._theme_playing = False
+            except Exception as e:
+                print(f"[MUSIC] load error: {e}")
+                self._theme_music = None
+        return getattr(self, '_theme_music', None)
+
+    def _music_fade_in(self, duration=2.5, target=0.70):
+        self.taskMgr.remove("_themeMusicFade")
+        music = self._ensure_theme_music()
+        if not music:
+            return
+        if not getattr(self, '_theme_playing', False):
+            music.setVolume(0.0)
+            music.play()
+            self._theme_playing = True
+        start_vol = music.getVolume()
+        elapsed   = [0.0]
+
+        def _fade(task):
+            elapsed[0] = min(elapsed[0] + globalClock.getDt(), duration)
+            t = elapsed[0] / duration
+            music.setVolume(start_vol + (target - start_vol) * t)
+            return task.cont if elapsed[0] < duration else task.done
+
+        self.taskMgr.add(_fade, "_themeMusicFade")
+
+    def _music_fade_out(self, duration=1.0):
+        self.taskMgr.remove("_themeMusicFade")
+        music = getattr(self, '_theme_music', None)
+        if not music or not getattr(self, '_theme_playing', False):
+            return
+        start_vol = music.getVolume()
+        elapsed   = [0.0]
+
+        def _fade(task):
+            elapsed[0] = min(elapsed[0] + globalClock.getDt(), duration)
+            t = elapsed[0] / duration
+            music.setVolume(max(0.0, start_vol * (1.0 - t)))
+            if elapsed[0] >= duration:
+                music.stop()
+                self._theme_playing = False
+                return task.done
+            return task.cont
+
+        self.taskMgr.add(_fade, "_themeMusicFade")
+
     # ── Browse screen ──────────────────────────────────────────────────────
 
     def _build_browse_screen(self):
+        self._music_fade_in()
         self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
@@ -3638,6 +3815,7 @@ class LoginScreenMixin:
         threading.Thread(target=worker, daemon=True).start()
 
     def _do_enter_play_mode_solo(self, build_id, name, data_str, task):
+        self._music_fade_out(1.2)
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
             self._main_menu_ui = None
@@ -3645,8 +3823,24 @@ class LoginScreenMixin:
         self._cloud_build_id   = None
         self._cloud_build_name = None
         self._show_studio_ui()
+        # Hide the black top bar in online play — Menu and Chat buttons are
+        # parented directly to a2dTopLeft so they stay visible without the bar.
+        tb = getattr(self, "_top_bg", None)
+        if tb:
+            tb.hide()
+        sl = getattr(self, "_status_lbl", None)
+        if sl:
+            sl.hide()
+        self._setup_play_hud()
+        mb = getattr(self, "menu_button", None)
+        if mb:
+            mb.reparentTo(base.a2dTopLeft)
+            mb.setPos(0.070, 0, -0.045)
+            mb['frameColor'] = (0.15, 0.17, 0.20, 0.62)
+            mb['text_fg']    = (0.88, 0.90, 0.95, 1.0)
+            mb.show()
         for attr in ("exit_button", "insert_brick_button", "move_button",
-                     "scale_button", "export_button", "import_button",
+                     "scale_button", "rotate_button", "export_button", "import_button",
                      "cloud_save_button", "hat_config_button"):
             btn = getattr(self, attr, None)
             if btn:
@@ -3853,6 +4047,7 @@ class LoginScreenMixin:
 
     def _enter_play_mode(self, build_id, name, data_str):
         """Load a published build and enter play-only mode (no editor)."""
+        self._music_fade_out(1.2)
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
             self._main_menu_ui = None
@@ -3861,9 +4056,25 @@ class LoginScreenMixin:
         self._cloud_build_name = None
 
         self._show_studio_ui()
+        # Hide the black top bar in online play — Menu and Chat buttons are
+        # parented directly to a2dTopLeft so they stay visible without the bar.
+        tb = getattr(self, "_top_bg", None)
+        if tb:
+            tb.hide()
+        sl = getattr(self, "_status_lbl", None)
+        if sl:
+            sl.hide()
+        self._setup_play_hud()
+        mb = getattr(self, "menu_button", None)
+        if mb:
+            mb.reparentTo(base.a2dTopLeft)
+            mb.setPos(0.070, 0, -0.045)
+            mb['frameColor'] = (0.15, 0.17, 0.20, 0.62)
+            mb['text_fg']    = (0.88, 0.90, 0.95, 1.0)
+            mb.show()
         # Hide all editor controls — only the Menu button stays
         for attr in ("exit_button", "insert_brick_button", "move_button",
-                     "scale_button", "export_button", "import_button",
+                     "scale_button", "rotate_button", "export_button", "import_button",
                      "cloud_save_button", "hat_config_button"):
             btn = getattr(self, attr, None)
             if btn:
@@ -3943,7 +4154,6 @@ class LoginScreenMixin:
         self.cam_angle.set(0, 20)
         self.camLens.setFov(getattr(self, '_settings_play_fov', 80))
         self.updateCamera()
-        self._entering_play_mode = False
         self._apply_hat_mode()
         self.start_multiplayer(build_id, self._session_token)
 
@@ -3961,6 +4171,10 @@ class LoginScreenMixin:
         self._entering_play_mode = False
         if getattr(self, 'is_first_person', False):
             self._exit_first_person()
+        self._teardown_play_hud()
+        sl = getattr(self, "_status_lbl", None)
+        if sl:
+            sl.show()
         self.stop_multiplayer()
         for pid in list(getattr(self, "_remote_players", {}).keys()):
             self._remove_remote_player(pid)

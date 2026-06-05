@@ -165,20 +165,24 @@ class CharacterMixin:
             return Task.cont
         if getattr(self, "_chat_input_active", False):
             return Task.cont
+        if getattr(self, '_respawning', False):
+            return Task.cont   # freeze physics/input during countdown
 
         current_pos = self.character.getPos()
 
         if current_pos.z < getattr(self, '_void_limit', -80):
-            self.vertical_speed = 0
-            self.is_jumping = False
-            spawn_pts = list(getattr(self, 'brick_spawn_points', set()))
-            if spawn_pts:
-                sp = random.choice(spawn_pts)
-                p = sp.getPos(); s = sp.getScale()
-                self.character.setPos(p.x + s.x / 2, p.y + s.y / 2, p.z + s.z)
-            else:
-                self.character.setPos(0, 0, self.floor_top)
+            self._trigger_respawn()
             return Task.cont
+
+        # Kill-brick detection
+        if not getattr(self, '_respawning', False):
+            char_box = self.get_character_collision_box(current_pos)
+            for brick in self._grid_nearby(current_pos, 12):
+                if brick in getattr(self, 'brick_kill_bricks', set()):
+                    brick_box = self.get_brick_collision_box(brick)
+                    if self.boxes_collide(char_box, brick_box):
+                        self._trigger_respawn()
+                        return Task.cont
 
         move_x = move_y = 0
         if self.keys["w"]: move_y += 1
@@ -233,12 +237,22 @@ class CharacterMixin:
         MAX_STEP = 1.2
         if not self.is_jumping and self.vertical_speed <= 0:
             char_box = self.get_character_collision_box(current_pos)
+            cx = char_box['center'].x
+            cy = char_box['center'].y
             for brick in self._grid_nearby(current_pos, 15):
+                hpr = brick.getHpr()
+                if abs(hpr.x) > 0.5 or abs(hpr.y) > 0.5 or abs(hpr.z) > 0.5:
+                    # Rotated bricks: get_ground_height_at_position already uses
+                    # a 1.2-unit tolerance and returns the slope surface height.
+                    # A second step-up pass here produces conflicting ground_height
+                    # values on the same frame and is the source of the remaining
+                    # jitter — skip and let the gravity snap handle it.
+                    continue
                 brick_box = self.get_brick_collision_box(brick)
                 brick_top = brick_box['max_z']
                 if (char_box['min_z'] + 0.05 < brick_top <= char_box['min_z'] + MAX_STEP and
-                        abs(char_box['center'].x - brick_box['center'].x) < char_box['half_width'] + brick_box['half_width'] and
-                        abs(char_box['center'].y - brick_box['center'].y) < char_box['half_depth'] + brick_box['half_depth']):
+                        abs(cx - brick_box['center'].x) < char_box['half_width'] + brick_box['half_width'] and
+                        abs(cy - brick_box['center'].y) < char_box['half_depth'] + brick_box['half_depth']):
                     ground_height = max(ground_height, brick_top)
 
         step_diff = ground_height - current_pos.z
@@ -275,6 +289,59 @@ class CharacterMixin:
         self.character.setZ(new_z)
         self._unstuck_character(allow_jump_cancel=not jump_initiated)
         return Task.cont
+
+    def _trigger_respawn(self):
+        if getattr(self, '_respawning', False):
+            return
+        self._respawning = True
+        self.vertical_speed = 0
+        self.is_jumping = False
+        # Hide character visuals. Character node stays in place so the camera
+        # (which orbits cam_target, a child of head → character) keeps its view.
+        self.character.hide()
+        hat = getattr(self, '_equipped_hat_model', None)
+        if hat and not hat.isEmpty():
+            hat.hide()
+        broadcast = getattr(self, '_broadcast_player_visibility', None)
+        if broadcast:
+            broadcast(False)
+        self._respawn_countdown(3)
+
+    def _respawn_countdown(self, n):
+        from direct.gui.OnscreenText import OnscreenText
+        lbl = getattr(self, '_respawn_lbl', None)
+        if lbl:
+            try: lbl.destroy()
+            except Exception: pass
+        if n > 0:
+            self._respawn_lbl = OnscreenText(
+                text=f"Respawning in {n}...",
+                pos=(0, 0.15), scale=0.10,
+                fg=(1, 1, 1, 1), shadow=(0, 0, 0, 0.7),
+                mayChange=True,
+            )
+            self.taskMgr.doMethodLater(
+                1.0, self._respawn_tick, '_respawnCountdown',
+                extraArgs=[n - 1], appendTask=True,
+            )
+        else:
+            self._respawn_lbl = None
+            self._finish_respawn()
+
+    def _respawn_tick(self, n, task):
+        self._respawn_countdown(n)
+        return task.done
+
+    def _finish_respawn(self):
+        self.spawn_unstuck()
+        self.character.show()
+        hat = getattr(self, '_equipped_hat_model', None)
+        if hat and not hat.isEmpty():
+            hat.show()
+        broadcast = getattr(self, '_broadcast_player_visibility', None)
+        if broadcast:
+            broadcast(True)
+        self._respawning = False
 
     def spawn_unstuck(self):
         """Place character on a spawn point (random if multiple), or fall back
@@ -333,6 +400,33 @@ class CharacterMixin:
             best_push_dist = float('inf')
 
             for brick in self._grid_nearby(pos, 12):
+                hpr = brick.getHpr()
+                if abs(hpr.x) > 0.5 or abs(hpr.y) > 0.5 or abs(hpr.z) > 0.5:
+                    if not self._obb_aabb_collide(char_box, brick):
+                        continue
+                    surf_z = self._rotated_surface_z(brick, char_box['center'].x, char_box['center'].y)
+                    if surf_z is None:
+                        # Strict footprint missed (slope edge) — retry with clamping
+                        # before falling back to a side-push that can cause jitter.
+                        surf_z = self._rotated_surface_z(brick, char_box['center'].x, char_box['center'].y, clamp=True)
+                    if surf_z is not None:
+                        # On or near the top face — push only vertically so the
+                        # character doesn't slide sideways down the slope.
+                        push_up = surf_z - char_box['min_z']
+                        if push_up <= 0.02:
+                            continue  # dead zone: prevents ping-pong with gravity snap
+                        if push_up < 2.0 and push_up < best_push_dist:
+                            best_push_dist = push_up
+                            best_push = Vec3(0, 0, push_up)
+                    else:
+                        # Truly at a side or bottom face — minimum-penetration push
+                        push = self._obb_aabb_push(char_box, brick)
+                        if push is not None:
+                            dist = push.length()
+                            if dist > 0 and dist < best_push_dist:
+                                best_push_dist = dist
+                                best_push = push
+                    continue
                 brick_box = self.get_brick_collision_box(brick)
                 if not self.boxes_collide(char_box, brick_box):
                     continue
@@ -1116,6 +1210,61 @@ class CharacterMixin:
             print(f'    "{k}": ({v[0]}, {v[1]}, {v[2]}, {v[3]}),', flush=True)
         print('======================================================\n', flush=True)
 
+    def apply_face(self, frames_b64):
+        """Replace the animated face sprite with up to 3 custom PNG frames.
+        frames_b64 is a list of base64-encoded PNG strings."""
+        import base64 as _b64
+        from panda3d.core import PNMImage, StringStream, Texture
+        textures = []
+        for i, fb in enumerate(frames_b64 or []):
+            try:
+                raw = _b64.b64decode(fb)
+                print(f"[FACE_APPLY] frame {i} first32={raw[:32]}", flush=True)
+                ss  = StringStream(raw)
+                pnm = PNMImage()
+                ok  = pnm.read(ss, "frame.png")
+                print(f"[FACE_APPLY] frame {i}: raw_len={len(raw)} pnm_read={ok} size={pnm.getXSize()}x{pnm.getYSize()}", flush=True)
+                if ok:
+                    tex = Texture()
+                    tex.load(pnm)
+                    tex.setMagfilter(Texture.FTLinear)
+                    tex.setMinfilter(Texture.FTLinear)
+                    textures.append(tex)
+            except Exception as e:
+                print(f"[FACE_APPLY] frame {i} decode error: {e}", flush=True)
+        print(f"[FACE_APPLY] total textures loaded: {len(textures)}", flush=True)
+        if not textures:
+            return
+        self._face_textures = textures
+        self._face_frame    = 0
+        self._face_anim_t   = 0.0
+        spr = getattr(self, '_face_sprite', None)
+        print(f"[FACE_APPLY] _face_sprite exists={spr is not None} empty={spr.isEmpty() if spr else 'N/A'}", flush=True)
+        if spr and not spr.isEmpty():
+            spr.setTexture(textures[0])
+            print(f"[FACE_APPLY] setTexture called OK", flush=True)
+
+    def remove_face(self):
+        """Restore the default built-in face textures."""
+        import os as _os
+        from panda3d.core import Filename
+        _face_dir = _os.path.join(_os.getcwd(), 'textures', 'face sprites')
+        textures = []
+        for fname in ('facesprite1-removebg-preview.png',
+                      'facesprite2-removebg-preview.png',
+                      'facesprite3-removebg-preview.png'):
+            t = self.loader.loadTexture(
+                Filename.fromOsSpecific(_os.path.join(_face_dir, fname)))
+            if t:
+                textures.append(t)
+        if textures:
+            self._face_textures = textures
+            self._face_frame    = 0
+            self._face_anim_t   = 0.0
+            spr = getattr(self, '_face_sprite', None)
+            if spr and not spr.isEmpty():
+                spr.setTexture(textures[0])
+
     def apply_hat(self, hat_data_json):
         """Load a hat from server hat_data JSON and attach it (follows head each frame)."""
         self.remove_hat()
@@ -1197,7 +1346,7 @@ class CharacterMixin:
         m = getattr(self, '_equipped_hat_model', None)
         if not m or m.isEmpty():
             return Task.done
-        if not self.is_playtest:
+        if not self.is_playtest or getattr(self, '_respawning', False):
             m.hide()
             return Task.cont
         m.show()

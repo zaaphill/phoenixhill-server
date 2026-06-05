@@ -23,10 +23,14 @@ _INPUT_H    = 0.052  # chat input bar height (1 line)
 _INPUT_LINE = 0.040  # extra height added per wrapped line
 _LB_W       = 0.32   # leaderboard panel width
 _CHAT_TOP   = -0.10  # z from a2dTopLeft — sits just below the toolbar (TH=0.09)
-# Toolbar-button style constants (must match ui.py BTN / TEXT / TH)
-_TB_COLOR   = (0.19, 0.21, 0.29, 1.0)
-_TB_TEXT    = (0.88, 0.90, 0.95, 1.0)
+# Online-play UI palette — dark grey, translucent
+_TB_COLOR   = (0.15, 0.17, 0.20, 0.62)   # button background
+_TB_TEXT    = (0.88, 0.90, 0.95, 1.00)   # button label (light on dark)
 _TB_BZ      = -0.045  # -TH/2 = vertical centre of the top bar
+_PNL_COLOR  = (0.10, 0.11, 0.14, 0.55)   # panel / frame background
+_MSG_FG     = (0.90, 0.92, 0.95, 1.00)   # chat message text
+_PH_FG      = (0.75, 0.77, 0.80, 0.50)   # placeholder text
+_INPUT_COL  = (0.12, 0.13, 0.16, 0.65)   # input bar background
 
 
 class MultiplayerMixin:
@@ -220,6 +224,14 @@ class MultiplayerMixin:
                 await ws.send(json.dumps({"type": "equip_pants", "item_id": equipped_pants}))
             except Exception as e:
                 print(f"[MP] failed to send equip_pants: {e}")
+        equipped_face_id = getattr(self, '_equipped_face_id', None)
+        if equipped_face_id:
+            try:
+                frames = self._get_equipped_face_frames()
+                await ws.send(json.dumps({"type": "equip_face", "item_id": equipped_face_id,
+                                          "frames": frames}))
+            except Exception as e:
+                print(f"[MP] failed to send equip_face: {e}")
 
         last_pos = None
         last_sent = time.monotonic()
@@ -333,7 +345,8 @@ class MultiplayerMixin:
                     pass
 
             face_np = d.get("face_np")
-            face_textures = getattr(self, '_face_textures', [])
+            # Use per-player custom face if equipped, else fall back to default
+            face_textures = d.get("face_textures") or getattr(self, '_face_textures', [])
             if face_np and len(face_textures) >= 2:
                 d["face_anim_t"] += dt
                 if d["face_anim_t"] >= 0.25:
@@ -382,14 +395,16 @@ class MultiplayerMixin:
             for pid, d in players.items():
                 self._add_remote_player(pid, d.get("username", pid), d.get("colors"),
                                         tshirt_id=d.get("tshirt_id"), hat_id=d.get("hat_id"),
-                                        shirt_id=d.get("shirt_id"), pants_id=d.get("pants_id"))
+                                        shirt_id=d.get("shirt_id"), pants_id=d.get("pants_id"),
+                                        face_id=d.get("face_id"))
                 self._update_remote_player(pid, d)
             self._update_leaderboard()
         elif t == "joined":
             print(f"[WS_RECV] type=joined pid={msg.get('player_id')} username={msg.get('username')!r} colors={msg.get('colors')}", flush=True)
             self._add_remote_player(msg["player_id"], msg.get("username", ""), msg.get("colors"),
                                     tshirt_id=msg.get("tshirt_id"), hat_id=msg.get("hat_id"),
-                                    shirt_id=msg.get("shirt_id"), pants_id=msg.get("pants_id"))
+                                    shirt_id=msg.get("shirt_id"), pants_id=msg.get("pants_id"),
+                                    face_id=msg.get("face_id"))
             self._update_leaderboard()
             self._broadcast_my_colors()
         elif t == "left":
@@ -405,6 +420,21 @@ class MultiplayerMixin:
             print(f"[WS_RECV] type=avatar_colors pid={pid} pid_known={pid in self._remote_players} colors={msg.get('colors')}", flush=True)
             if pid and pid in self._remote_players:
                 self._apply_colors_to_remote_player(pid, msg.get("colors", {}))
+        elif t == "equip_face":
+            pid    = msg.get("player_id")
+            frames = msg.get("frames") or []
+            if pid and pid in self._remote_players:
+                self._apply_face_to_remote(pid, frames)
+        elif t == "visibility":
+            pid     = msg.get("player_id")
+            visible = msg.get("visible", True)
+            if pid and pid in self._remote_players:
+                root = self._remote_players[pid].get("root")
+                if root and not root.isEmpty():
+                    if visible:
+                        root.show()
+                    else:
+                        root.hide()
         elif t == "chat":
             self._add_chat_message(msg.get("username", "?"), msg.get("text", ""))
         elif t == "equip_tshirt":
@@ -511,7 +541,7 @@ class MultiplayerMixin:
         box.setTextureOff(1)
         return box
 
-    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None, hat_id=None, shirt_id=None, pants_id=None):
+    def _add_remote_player(self, pid, username, colors=None, tshirt_id=None, hat_id=None, shirt_id=None, pants_id=None, face_id=None):
         if pid in self._remote_players:
             return
         # Ignore ghost entries for our own account (zombie from a previous session
@@ -630,6 +660,11 @@ class MultiplayerMixin:
             threading.Thread(
                 target=self._fetch_and_apply_remote_pants,
                 args=(pid, pants_id), daemon=True,
+            ).start()
+        if face_id:
+            threading.Thread(
+                target=self._fetch_and_apply_remote_face,
+                args=(pid, face_id), daemon=True,
             ).start()
         for _nk, _ck in [("torso_node","torso"),("la_node","left_arm"),("ra_node","right_arm"),
                           ("ll_node","left_leg"),("rl_node","right_leg"),("head_node","head")]:
@@ -853,6 +888,7 @@ class MultiplayerMixin:
                 np.setPos(*pos)
                 np.setTexture(tex)
                 np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(2)
                 np.setTransparency(TransparencyAttrib.MAlpha)
                 return np
 
@@ -930,6 +966,7 @@ class MultiplayerMixin:
                 np = parent.attachNewNode(node)
                 np.setPos(*pos); np.setTexture(tex)
                 np.setTwoSided(True); np.setShaderOff()
+                np.setDepthOffset(1)
                 np.setTransparency(TransparencyAttrib.MAlpha)
                 return np
 
@@ -1020,38 +1057,45 @@ class MultiplayerMixin:
                    for pid, d in getattr(self, "_remote_players", {}).items()]
         players = [local] + remotes
 
-        row_h   = 0.040
-        title_h = 0.048
-        pad     = 0.014
-        h       = title_h + len(players) * row_h + pad
+        NAME_SCALE = 0.038   # own name at top-right
+        ROW_SCALE  = 0.033   # player-list entries
+        NAME_H     = 0.052   # vertical space for own-name row
+        ROW_H      = 0.040   # vertical space per player row
+        PAD_X      = 0.018   # left/right inner margin
+        PAD_BOT    = 0.010   # bottom padding
+
+        panel_w = _LB_W
+        panel_h = NAME_H + len(players) * ROW_H + PAD_BOT
 
         self._lb_panel = DirectFrame(
-            frameColor=(0, 0, 0, 0.55),
-            frameSize=(-_LB_W, 0, -h, 0),
+            frameColor=_PNL_COLOR,
+            frameSize=(-panel_w, 0, -panel_h, 0),
             parent=base.a2dTopRight,
-            pos=(-0.04, 0, -0.12),
+            pos=(-0.02, 0, -0.04),
             sortOrder=55,
         )
+
+        # Own username — right-aligned, prominent, in the top-right of the panel
         DirectLabel(
-            text="Players",
-            text_fg=(1, 1, 1, 0.65),
-            text_scale=0.032,
-            text_align=TextNode.ACenter,
+            text=local,
+            text_fg=_MSG_FG,
+            text_scale=NAME_SCALE,
+            text_align=TextNode.ARight,
             frameColor=(0, 0, 0, 0),
             parent=self._lb_panel,
-            pos=(-_LB_W * 0.5, 0, -0.030),
+            pos=(-PAD_X, 0, -(NAME_H * 0.62)),
         )
+
+        # Player list — all players left-aligned below the name
         for i, name in enumerate(players):
-            color   = (0.95, 0.85, 0.30, 1) if i == 0 else (0.88, 0.90, 0.95, 1)
-            display = f"{name}  (You)" if i == 0 else name
             DirectLabel(
-                text=display,
-                text_fg=color,
-                text_scale=0.030,
+                text=name,
+                text_fg=_MSG_FG,
+                text_scale=ROW_SCALE,
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
                 parent=self._lb_panel,
-                pos=(-_LB_W + 0.014, 0, -(title_h + i * row_h + 0.010)),
+                pos=(-panel_w + PAD_X, 0, -(NAME_H + i * ROW_H + 0.008)),
             )
 
     def _teardown_leaderboard(self):
@@ -1062,6 +1106,82 @@ class MultiplayerMixin:
             except Exception:
                 pass
         self._lb_panel = None
+
+    def _get_equipped_face_frames(self):
+        """Return the base64 frame list for the currently equipped face item."""
+        eid = getattr(self, '_equipped_face_id', None)
+        if not eid:
+            return []
+        import auth_client as _ac
+        result, _ = _ac.get_shop_item(eid)
+        if not result:
+            return []
+        idat = result.get("image_data") or ""
+        if "|FACEDATA|" in idat:
+            return [f for f in idat.split("|FACEDATA|", 1)[1].split(",") if f]
+        return []
+
+    def _apply_face_to_remote(self, pid, frames_b64):
+        """Replace a remote player's animated face textures with custom frames."""
+        d = self._remote_players.get(pid)
+        if not d:
+            return
+        import base64 as _b64
+        from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+        face_np = d.get("face_np")
+        if not face_np or face_np.isEmpty():
+            return
+        if not frames_b64:
+            # Restore default textures from the cached list
+            defaults = getattr(self, '_face_textures', [])
+            if defaults:
+                d["face_textures"]  = list(defaults)
+                d["face_frame"]     = 0
+                face_np.setTexture(defaults[0])
+            return
+        textures = []
+        for fb in frames_b64[:3]:
+            try:
+                raw = _b64.b64decode(fb); ss = StringStream(raw); pnm = PNMImage()
+                if pnm.read(ss):
+                    tex = Texture(); tex.load(pnm)
+                    tex.setMagfilter(Texture.FTLinear)
+                    tex.setMinfilter(Texture.FTLinear)
+                    textures.append(tex)
+            except Exception:
+                pass
+        if textures:
+            d["face_textures"] = textures
+            d["face_frame"]    = 0
+            face_np.setTexture(textures[0])
+
+    def _fetch_and_apply_remote_face(self, pid, face_id):
+        """Fetch face item from server and apply to a remote player (background thread)."""
+        import auth_client
+        result, _ = auth_client.get_shop_item(face_id)
+        if not result:
+            return
+        idat = result.get("image_data") or ""
+        if "|FACEDATA|" not in idat:
+            return
+        frames_b64 = [f for f in idat.split("|FACEDATA|", 1)[1].split(",") if f]
+        self.taskMgr.doMethodLater(
+            0, lambda task, _p=pid, _f=frames_b64: (self._apply_face_to_remote(_p, _f), task.done)[1],
+            "_applyRemoteFace", appendTask=True,
+        )
+
+    def _broadcast_player_visibility(self, visible):
+        ws   = getattr(self, "_ws", None)
+        loop = getattr(self, "_mp_loop", None)
+        if not ws or not loop or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ws.send(json.dumps({"type": "visibility", "visible": visible})),
+                loop,
+            )
+        except Exception as e:
+            print(f"[MP] visibility broadcast error: {e}")
 
     def _broadcast_my_colors(self):
         """Send our avatar colors over the websocket so other players can update us."""
@@ -1110,6 +1230,40 @@ class MultiplayerMixin:
             except Exception as e:
                 print(f"[MP] broadcast equip_pants error: {e}")
 
+    # ── Online-play HUD (FPS + brick count above the leaderboard) ─────────
+
+    def _setup_play_hud(self):
+        self._teardown_play_hud()
+        self._play_status_lbl = DirectLabel(
+            text="",
+            text_fg=_TB_TEXT,
+            text_scale=0.030,
+            text_align=TextNode.ARight,
+            frameColor=(0, 0, 0, 0),
+            parent=base.a2dTopRight,
+            pos=(-0.04, 0, -0.022),
+            sortOrder=55,
+        )
+        self.taskMgr.add(self._play_status_update, "_playStatusTask")
+
+    def _play_status_update(self, task):
+        lbl = getattr(self, "_play_status_lbl", None)
+        if not lbl or lbl.isEmpty():
+            return Task.done
+        fps = globalClock.getAverageFrameRate()
+        lbl['text'] = f"{len(self.bricks)} Bricks  |  {fps:.0f} FPS"
+        return Task.cont
+
+    def _teardown_play_hud(self):
+        self.taskMgr.remove("_playStatusTask")
+        lbl = getattr(self, "_play_status_lbl", None)
+        if lbl:
+            try:
+                lbl.destroy()
+            except Exception:
+                pass
+        self._play_status_lbl = None
+
     # ── Chat ──────────────────────────────────────────────────────────────
 
     def _setup_chat_ui(self):
@@ -1117,15 +1271,15 @@ class MultiplayerMixin:
         self._chat_input_active = False
         self._chat_visible      = True
 
-        # Chat toggle button lives in the top toolbar (same style as Menu/Edit).
-        # Placed at x=0.195, between Menu and the Edit button.
+        # Chat toggle button — anchored to a2dTopLeft directly so it stays
+        # visible even when the top bar is hidden during online play.
         self._chat_toggle_btn = DirectButton(
             text="Chat",
             text_fg=_TB_TEXT,
             text_scale=0.040,
             frameColor=_TB_COLOR,
             frameSize=(-0.055, 0.055, -0.032, 0.032),
-            parent=self._top_bg,
+            parent=base.a2dTopLeft,
             pos=(0.195, 0, _TB_BZ),
             relief=1,
             command=self._toggle_chat,
@@ -1133,7 +1287,7 @@ class MultiplayerMixin:
 
         # Message area — just below the toolbar
         self._chat_panel = DirectFrame(
-            frameColor=(0, 0, 0, 0.50),
+            frameColor=_PNL_COLOR,
             frameSize=(0, _CHAT_PNL_W, -_CHAT_PNL_H, 0),
             parent=base.a2dTopLeft,
             pos=(0.04, 0, _CHAT_TOP),
@@ -1146,7 +1300,7 @@ class MultiplayerMixin:
             z = -_CHAT_PNL_H + 0.030 + i * _LINE_SPACE
             lbl = DirectLabel(
                 text="",
-                text_fg=(1, 1, 1, 0.92),
+                text_fg=_MSG_FG,
                 text_scale=0.030,
                 text_align=TextNode.ALeft,
                 frameColor=(0, 0, 0, 0),
@@ -1157,7 +1311,7 @@ class MultiplayerMixin:
 
         # Input bar — click anywhere on it to start typing
         self._chat_input_frame = DirectFrame(
-            frameColor=(0, 0, 0, 0.68),
+            frameColor=_INPUT_COL,
             frameSize=(0, _CHAT_PNL_W, -_INPUT_H, 0),
             parent=base.a2dTopLeft,
             pos=(0.04, 0, _CHAT_TOP - _CHAT_PNL_H),
@@ -1166,7 +1320,7 @@ class MultiplayerMixin:
         )
         self._chat_placeholder = DirectLabel(
             text='To chat click here or press "/" key',
-            text_fg=(1, 1, 1, 0.38),
+            text_fg=_PH_FG,
             text_scale=0.028,
             text_align=TextNode.ALeft,
             frameColor=(0, 0, 0, 0),
@@ -1174,7 +1328,7 @@ class MultiplayerMixin:
             pos=(0.015, 0, -0.033),
         )
         self._chat_entry = DirectEntry(
-            text_fg=(1, 1, 1, 1),
+            text_fg=_MSG_FG,
             text_scale=0.033,
             frameColor=(0, 0, 0, 0),
             width=26,

@@ -437,19 +437,20 @@ class AvatarMixin:
             frameSize=(-0.64, 0.64, -0.002, 0.002),
             parent=items_bg, pos=(0, 0, 0.44),
         )
-        # ── T-Shirts / Hats filter tabs ────────────────────────────────────
+        # ── T-Shirts / Shirts / Pants / Hats / Face filter tabs ────────────
         _TAB_ON  = (0.44, 0.32, 0.64, 1.0)
         _TAB_OFF = (0.58, 0.48, 0.76, 1.0)
-        tabs = [("T-Shirts","tshirt"),("Shirts","shirt"),("Pants","pants"),("Hats","hat")]
+        tabs = [("T-Shirts","tshirt"),("Shirts","shirt"),("Pants","pants"),
+                ("Hats","hat"),("Face","face")]
         for ti, (tab_label, tab_val) in enumerate(tabs):
             is_on = (tab_val == items_filter)
             DirectButton(
                 text=tab_label,
-                text_fg=_TEXT_H, text_scale=0.020,
+                text_fg=_TEXT_H, text_scale=0.018,
                 frameColor=_TAB_ON if is_on else _TAB_OFF,
-                frameSize=(-0.10, 0.10, -0.026, 0.026),
+                frameSize=(-0.082, 0.082, -0.026, 0.026),
                 parent=items_bg,
-                pos=(-0.30 + ti * 0.20, 0, 0.385),
+                pos=(-0.328 + ti * 0.164, 0, 0.385),
                 relief=1,
                 command=self._build_avatar_screen,
                 extraArgs=["items", tab_val],
@@ -482,11 +483,14 @@ class AvatarMixin:
                     owned_items = [it for it in all_owned if "|SHIRTDATA|" in (it.get("image_data") or "")]
                 elif flt == "pants":
                     owned_items = [it for it in all_owned if "|PANTSDATA|" in (it.get("image_data") or "")]
+                elif flt == "face":
+                    owned_items = [it for it in all_owned if "|FACEDATA|" in (it.get("image_data") or "")]
                 else:
                     owned_items = [it for it in all_owned
                                    if "|HATDATA|"    not in (it.get("image_data") or "")
                                    and "|SHIRTDATA|" not in (it.get("image_data") or "")
-                                   and "|PANTSDATA|" not in (it.get("image_data") or "")]
+                                   and "|PANTSDATA|" not in (it.get("image_data") or "")
+                                   and "|FACEDATA|"  not in (it.get("image_data") or "")]
 
                 # Restore T-shirt preview (search all_owned regardless of tab)
                 preview_b64 = None
@@ -625,6 +629,33 @@ class AvatarMixin:
                 thumb_textures = self._render_shop_thumbnails(pants_items, buf_w=256, buf_h=256)
             except Exception:
                 thumb_textures = {}
+        elif cur_filter == "face":
+            # Face: thumbnail is the first frame (before |FACEDATA|), composited on white
+            for it in items:
+                iid  = it.get("id")
+                idat = it.get("image_data") or ""
+                if "|FACEDATA|" in idat:
+                    idat = idat.split("|FACEDATA|")[0]
+                if iid and idat:
+                    try:
+                        raw  = _b64.b64decode(idat)
+                        face = PNMImage()
+                        if face.read(StringStream(raw), "face.png"):
+                            w, h = face.getXSize(), face.getYSize()
+                            bg = PNMImage(w, h)
+                            bg.fill(1, 1, 1)
+                            bg.alphaFill(1)
+                            if face.hasAlpha():
+                                bg.blendSubImage(face, 0, 0)
+                            else:
+                                bg.copySubImage(face, 0, 0)
+                            tex = Texture()
+                            tex.load(bg)
+                            tex.setMagfilter(Texture.FTLinear)
+                            tex.setMinfilter(Texture.FTLinear)
+                            thumb_textures[iid] = tex
+                    except Exception:
+                        pass
         else:
             # Hats: strip the |HATDATA| payload, keep only the thumbnail prefix
             for it in items:
@@ -706,6 +737,10 @@ class AvatarMixin:
             equipped_id = getattr(self, "_equipped_hat_id", None)
         elif cur_filter == "shirt":
             equipped_id = getattr(self, "_equipped_shirt_id", None)
+        elif cur_filter == "pants":
+            equipped_id = getattr(self, "_equipped_pants_id", None)
+        elif cur_filter == "face":
+            equipped_id = getattr(self, "_equipped_face_id", None)
         else:
             equipped_id = getattr(self, "_equipped_tshirt_id", None)
         COLS = 3; CARD_W = 0.42; CARD_H = 0.42; NAME_H = 0.06
@@ -749,6 +784,18 @@ class AvatarMixin:
             )
             self._avatar_item_btns[item_id] = card
 
+        # Bob-only: "Upload Face" button visible when on the Face tab
+        if cur_filter == "face" and getattr(self, '_session_username', None) == "bob":
+            DirectButton(
+                text="+ Upload Face",
+                text_fg=_TEXT_H, text_scale=0.022,
+                frameColor=(0.38, 0.26, 0.56, 1.0),
+                frameSize=(-0.14, 0.14, -0.024, 0.024),
+                parent=items_bg, pos=(0, 0, -0.44),
+                relief=1,
+                command=self._show_upload_face_dialog,
+            )
+
         # Dim unavailable page buttons
         prev_btn = getattr(self, '_avatar_items_prev_btn', None)
         next_btn = getattr(self, '_avatar_items_next_btn', None)
@@ -764,9 +811,11 @@ class AvatarMixin:
 
     def _on_avatar_item_equip(self, item):
         import threading as _thr, auth_client as _ac
-        is_hat   = "|HATDATA|"   in (item.get("image_data") or "")
-        is_shirt = "|SHIRTDATA|" in (item.get("image_data") or "")
-        is_pants = "|PANTSDATA|" in (item.get("image_data") or "")
+        idat     = item.get("image_data") or ""
+        is_hat   = "|HATDATA|"   in idat
+        is_shirt = "|SHIRTDATA|" in idat
+        is_pants = "|PANTSDATA|" in idat
+        is_face  = "|FACEDATA|"  in idat
 
         if is_hat:
             self._on_avatar_hat_equip(item, _ac, _thr)
@@ -774,8 +823,57 @@ class AvatarMixin:
             self._on_avatar_shirt_equip(item, _ac, _thr)
         elif is_pants:
             self._on_avatar_pants_equip(item, _ac, _thr)
+        elif is_face:
+            self._on_avatar_face_equip(item, _ac, _thr)
         else:
             self._on_avatar_tshirt_equip(item, _ac, _thr)
+
+    def _on_avatar_face_equip(self, item, _ac, _thr):
+        import base64 as _b64
+        item_id     = item.get("id")
+        idat        = item.get("image_data") or ""
+        equipped_id = getattr(self, "_equipped_face_id", None)
+        token       = getattr(self, "_session_token", None)
+
+        if item_id == equipped_id:
+            # Un-equip: restore default face
+            self._equipped_face_id = None
+            if hasattr(self, "remove_face"):
+                self.remove_face()
+            if token:
+                _thr.Thread(
+                    target=lambda: _ac.equip_face(token, None), daemon=True).start()
+            self._broadcast_face_equip(None)
+        else:
+            # Equip: decode the 3 frames from |FACEDATA| payload
+            self._equipped_face_id = item_id
+            if "|FACEDATA|" in idat:
+                frames_part = idat.split("|FACEDATA|", 1)[1]
+                frames_b64  = [f for f in frames_part.split(",") if f]
+                if hasattr(self, "apply_face"):
+                    self.apply_face(frames_b64)
+                self._broadcast_face_equip(item_id, frames_b64)
+            if token:
+                _thr.Thread(
+                    target=lambda: _ac.equip_face(token, item_id), daemon=True).start()
+
+        # Refresh grid to show new equipped state
+        page = getattr(self, '_avatar_items_page', 0)
+        self._draw_avatar_items_page(page)
+
+    def _broadcast_face_equip(self, item_id, frames_b64=None):
+        ws   = getattr(self, "_ws", None)
+        loop = getattr(self, "_mp_loop", None)
+        if not ws or not loop or loop.is_closed():
+            return
+        import asyncio, json
+        payload = {"type": "equip_face", "item_id": item_id,
+                   "frames": frames_b64 or []}
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ws.send(json.dumps(payload)), loop)
+        except Exception as e:
+            print(f"[MP] face broadcast error: {e}")
 
     def _on_avatar_tshirt_equip(self, item, _ac, _thr):
         item_id    = item.get("id")

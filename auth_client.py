@@ -132,3 +132,7 @@ def equip_shirt(token, item_id_or_none):
 def equip_pants(token, item_id_or_none):
     return _request("PUT", "/api/avatar/equipped_pants",
                     {"item_id": item_id_or_none}, params={"token": token}, timeout=15)
+
+def equip_face(token, item_id_or_none):
+    return _request("PUT", "/api/avatar/equipped_face",
+                    {"item_id": item_id_or_none}, params={"token": token}, timeout=15)
