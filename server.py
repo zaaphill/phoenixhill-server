@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+import json
 
 # ── Auto-update ───────────────────────────────────────────────────────────────
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
@@ -31,6 +32,9 @@ _DB = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+
+with open("configv1.json", "r", encoding="utf-8") as file:
+    configvone = json.load(file)
 
 
 @app.on_event("startup")
@@ -289,6 +293,10 @@ def logout(token: str):
     c.commit()
     c.close()
     return {"ok": True}
+
+@app.get("/api/configs/v1")
+def config():
+  return configvone
 
 
 # ── Build endpoints ───────────────────────────────────────────────────────────
