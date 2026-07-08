@@ -33,8 +33,12 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
-with open("configv1.json", "r", encoding="utf-8") as file:
-    configvone = json.load(file)
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configsv1.json")
+try:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as _f:
+        configvone = json.load(_f)
+except Exception:
+    configvone = {"ShareBaseUrl": "", "ServerMaintenance": {"StartsInMinutes": 0}}
 
 
 @app.on_event("startup")
@@ -545,7 +549,17 @@ def list_shop_items():
            ORDER BY s.created_at DESC""",
     ).fetchall()
     c.close()
-    return {"items": [dict(r) for r in rows]}
+    items = []
+    for r in rows:
+        d = dict(r)
+        img = d.get("image_data") or ""
+        for sep in ("|SHIRTDATA|", "|PANTSDATA|", "|HATDATA|", "|FACEDATA|"):
+            if sep in img:
+                img = img.split(sep)[0]
+                break
+        d["image_data"] = img
+        items.append(d)
+    return {"items": items}
 
 @app.get("/api/shop/items/{item_id}")
 def get_shop_item(item_id: int):
