@@ -549,17 +549,7 @@ def list_shop_items():
            ORDER BY s.created_at DESC""",
     ).fetchall()
     c.close()
-    items = []
-    for r in rows:
-        d = dict(r)
-        img = d.get("image_data") or ""
-        for sep in ("|SHIRTDATA|", "|PANTSDATA|", "|HATDATA|", "|FACEDATA|"):
-            if sep in img:
-                img = img.split(sep)[0]
-                break
-        d["image_data"] = img
-        items.append(d)
-    return {"items": items}
+    return {"items": [dict(r) for r in rows]}
 
 @app.get("/api/shop/items/{item_id}")
 def get_shop_item(item_id: int):
