@@ -677,6 +677,21 @@ async def _broadcast(build_id: int, msg: dict, exclude: str = None):
     for pid in dead:
         _rooms.get(build_id, {}).pop(pid, None)
 
+@app.websocket("/api/voice/v1")
+async def voice(websocket: WebSocket):
+    await websocket.accept()
+    clients.append(websocket)
+
+    try:
+        while True:
+            audio = await websocket.receive_bytes()
+
+            for client in clients:
+                if client != websocket:
+                    await client.send_bytes(audio)
+
+    finally:
+        clients.remove(websocket)
 
 @app.websocket("/ws/{build_id}")
 async def ws_endpoint(websocket: WebSocket, build_id: int, token: str):
