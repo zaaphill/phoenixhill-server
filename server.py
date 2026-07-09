@@ -441,6 +441,10 @@ def get_avatar(token: str):
         return {**base, "colors": {}}
     return {**base, "colors": json.loads(row["avatar_colors"])}
 
+@app.get("/api/kubaxone/test")
+def kubaxonestesst():
+  return {"h8": "ok"}
+
 
 @app.put("/api/avatar")
 def put_avatar(token: str, b: AvatarBody):
