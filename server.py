@@ -363,6 +363,29 @@ def get_build(build_id: int, token: str):
         raise HTTPException(404, "Build not found")
     return {"ok": True, "id": row["id"], "name": row["name"], "data": row["data"]}
 
+@app.get("/api/users/{username}/avatar")
+def get_user_avatar(username: str):
+    c = _db()
+    row = c.execute(
+        """
+        SELECT username, avatar_colors,
+               equipped_tshirt,
+               equipped_hat,
+               equipped_shirt,
+               equipped_pants,
+               equipped_face
+        FROM users
+        WHERE username=? COLLATE NOCASE
+        """,
+        (username,)
+    ).fetchone()
+    c.close()
+
+    if not row:
+        raise HTTPException(404, "User not found")
+
+    return dict(row)
+
 
 @app.delete("/api/builds/{build_id}")
 def delete_build(build_id: int, token: str):
