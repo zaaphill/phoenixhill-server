@@ -240,6 +240,9 @@ def register(r: Creds):
     finally:
         c.close()
 
+@app.get("/api/accounts/testroute/kubaxonemade")
+def testingroute():
+  return {"ok": "ok"}
 
 @app.post("/api/login")
 def login(r: Creds):
