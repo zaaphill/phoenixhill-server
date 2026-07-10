@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.21"
+VERSION = "1.1.22"
 
 def _version_url():
     try:
@@ -214,10 +214,10 @@ Remove-Item -Path $PSCommandPath -Force -EA SilentlyContinue
         _log(f"Failed to write relaunch script: {e}")
         return
 
-    # Schedule 15 s from now — gives the game time to close cleanly.
-    # schtasks.exe is called synchronously so registration is complete
-    # before the game calls os._exit(0).
-    run_at = (datetime.datetime.now() + datetime.timedelta(seconds=15)).strftime('%H:%M:%S')
+    # Schedule 2 minutes from now. schtasks /st only accepts HH:MM (no
+    # seconds), so we round forward to a whole minute. Using 2 min ensures
+    # the scheduled time is always in the future even after rounding.
+    run_at = (datetime.datetime.now() + datetime.timedelta(minutes=2)).strftime('%H:%M')
     try:
         result = subprocess.run(
             ['schtasks', '/create', '/f',
