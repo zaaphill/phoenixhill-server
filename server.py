@@ -17,8 +17,8 @@ import json
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
 # Old clients check this on startup; if their version differs they silently
 # download the new exe and swap it in on next exit.
-GAME_VERSION      = "1.1.15"
-GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.15/PiePlex.exe"
+GAME_VERSION      = "1.1.16"
+GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.16/PiePlex.exe"
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
