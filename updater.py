@@ -26,7 +26,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.9"
+VERSION = "1.1.10"
 
 def _version_url():
     try:
@@ -36,11 +36,7 @@ def _version_url():
         return None
 
 # Log file written beside the EXE so we can inspect what happened.
-_LOG_PATH = os.path.join(
-    os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
-    else tempfile.gettempdir(),
-    "_phill_updater.log",
-)
+_LOG_PATH = os.path.join(tempfile.gettempdir(), "_phill_updater.log")
 
 def _log(msg):
     try:
@@ -167,20 +163,24 @@ def download_update(url, on_progress, on_done, on_error):
 def _schedule_relaunch(current, staging):
     """
     Launch a hidden PowerShell process that:
-      1. Waits 6 s for this process to fully exit.
-      2. Retries Move-Item staging → current up to 30 times (handles any
-         lingering AV scan lock on the old EXE).
-      3. Starts the renamed EXE.
+      1. Waits for THIS process (by PID) to fully exit, up to 30 s.
+      2. Retries Move-Item staging → current up to 30 times (handles AV locks).
+      3. Launches the renamed EXE only if the rename succeeded.
     """
-    sp = staging.replace("'", "''")
-    cp = current.replace("'", "''")
+    sp  = staging.replace("'", "''")
+    cp  = current.replace("'", "''")
+    pid = os.getpid()
     ps_cmd = (
-        f"Start-Sleep 6; "
-        f"$i=0; while($i -lt 30){{try{{Move-Item -Path '{sp}' -Destination '{cp}' "
-        f"-Force -ErrorAction Stop; break}}catch{{$i++; Start-Sleep 1}}}}; "
-        f"Start-Process '{cp}'"
+        # Wait for this process to exit by PID (much more reliable than fixed sleep)
+        f"$dl=(Get-Date).AddSeconds(30); "
+        f"while((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date)-lt $dl){{Start-Sleep 1}}; "
+        f"Start-Sleep 2; "
+        # Rename staging → current, retry up to 30 s for AV/file locks
+        f"$ok=$false; for($i=0;$i -lt 30;$i++){{try{{Move-Item -Path '{sp}' -Destination '{cp}' -Force -EA Stop;$ok=$true;break}}catch{{Start-Sleep 1}}}}; "
+        # Only launch if rename worked
+        f"if($ok){{Start-Process '{cp}'}}"
     )
-    _log(f"Spawning relaunch watcher for {current}")
+    _log("Scheduling relaunch")
 
     DETACHED = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
