@@ -17,8 +17,8 @@ import json
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
 # Old clients check this on startup; if their version differs they silently
 # download the new exe and swap it in on next exit.
-GAME_VERSION      = "1.0"
-GAME_DOWNLOAD_URL = ""   # paste direct .exe download link here after uploading
+GAME_VERSION      = "1.1.9"
+GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.9/PiePlex.exe"
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
@@ -462,7 +462,7 @@ def get_rooms():
     return {"rooms": {str(bid): len(players) for bid, players in _rooms.items()}}
 
 
-@app.get("/api/version")
+@app.get("/api/server_api_version")
 def api_version():
     return {"version": _SERVER_API_VERSION, "build_visits_exists": True}
 
