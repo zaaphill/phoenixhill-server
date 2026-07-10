@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.19"
+VERSION = "1.1.20"
 
 def _version_url():
     try:
@@ -206,7 +206,12 @@ if ($ok) {{
     encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
     _log("Scheduling relaunch")
 
-    DETACHED = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    # CREATE_BREAKAWAY_FROM_JOB removes the child from the parent's Job Object
+    # so it isn't killed when the PyInstaller process exits.
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    DETACHED = (subprocess.DETACHED_PROCESS |
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                CREATE_BREAKAWAY_FROM_JOB)
     subprocess.Popen(
         ["powershell.exe", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
         creationflags=DETACHED,
