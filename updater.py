@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.20"
+VERSION = "1.1.21"
 
 def _version_url():
     try:
@@ -154,30 +154,30 @@ def download_update(url, on_progress, on_done, on_error):
 
 def _schedule_relaunch(current, staging):
     """
-    Launch a hidden PowerShell process that:
-      1. Waits for THIS process (by PID) to fully exit, up to 30 s.
-      2. Retries Move-Item staging → current up to 30 times (handles AV locks).
-      3. Uses File.Replace() (atomic Windows API) to swap the EXE — far more
-         resilient to AV/OneDrive/Defender transient locks than Move-Item.
-      4. Retries Start-Process up to 20 times (AV may scan before launch).
-      All steps logged to _LOG_PATH so we can see exactly where it stops.
+    Registers a one-time Windows Scheduled Task (via schtasks.exe) that runs a
+    PowerShell script to swap the EXE and relaunch it.  Task Scheduler runs as
+    a system service — completely outside any Windows Job Object that would kill
+    regular child processes when the PyInstaller game process exits.
+    schtasks is called synchronously so registration completes before os._exit.
     """
-    import base64
-    sp  = staging.replace("'", "''")
-    cp  = current.replace("'", "''")
-    lp  = _LOG_PATH.replace("'", "''")
+    import datetime
+
+    sp = staging.replace("'", "''")
+    cp = current.replace("'", "''")
+    lp = _LOG_PATH.replace("'", "''")
     pid = os.getpid()
 
-    # Build the script as a plain readable string — no quoting headaches.
-    # -EncodedCommand accepts Base64 UTF-16-LE and bypasses all shell quoting.
     ps_script = f"""
 function Log($m) {{
     try {{ Add-Content -Path '{lp}' -Value "$([DateTime]::Now.ToString('HH:mm:ss'))  PS: $m" }} catch {{}}
 }}
-Log 'started, waiting for PID {pid}'
-$dl = (Get-Date).AddSeconds(30)
-while ((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date) -lt $dl) {{ Start-Sleep 1 }}
-Stop-Process -Id {pid} -Force -EA SilentlyContinue
+Log 'Task started'
+if (Get-Process -Id {pid} -EA SilentlyContinue) {{
+    Log 'waiting for PID {pid}'
+    $dl = (Get-Date).AddSeconds(30)
+    while ((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date) -lt $dl) {{ Start-Sleep 1 }}
+    Stop-Process -Id {pid} -Force -EA SilentlyContinue
+}}
 Log 'process gone, sleeping 2s'
 Start-Sleep 2
 $ok = $false
@@ -202,24 +202,41 @@ if ($ok) {{
 }} else {{
     Log 'all replace attempts failed'
 }}
+schtasks /delete /tn PhillUpdater /f 2>$null
+Remove-Item -Path $PSCommandPath -Force -EA SilentlyContinue
 """
-    encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
-    _log("Scheduling relaunch")
 
-    # CREATE_BREAKAWAY_FROM_JOB removes the child from the parent's Job Object
-    # so it isn't killed when the PyInstaller process exits.
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    DETACHED = (subprocess.DETACHED_PROCESS |
-                subprocess.CREATE_NEW_PROCESS_GROUP |
-                CREATE_BREAKAWAY_FROM_JOB)
-    subprocess.Popen(
-        ["powershell.exe", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
-        creationflags=DETACHED,
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    script_path = os.path.join(tempfile.gettempdir(), '_phill_relaunch.ps1')
+    try:
+        with open(script_path, 'w', encoding='utf-8-sig') as f:
+            f.write(ps_script)
+    except Exception as e:
+        _log(f"Failed to write relaunch script: {e}")
+        return
+
+    # Schedule 15 s from now — gives the game time to close cleanly.
+    # schtasks.exe is called synchronously so registration is complete
+    # before the game calls os._exit(0).
+    run_at = (datetime.datetime.now() + datetime.timedelta(seconds=15)).strftime('%H:%M:%S')
+    try:
+        result = subprocess.run(
+            ['schtasks', '/create', '/f',
+             '/tn', 'PhillUpdater',
+             '/tr', f'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "{script_path}"',
+             '/sc', 'once',
+             '/st', run_at],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log(f"schtasks failed: {result.stderr.decode(errors='replace').strip()}")
+            return
+        _log(f"Task scheduled for {run_at}")
+    except Exception as e:
+        _log(f"schtasks error: {e}")
+        return
+
+    _log("Scheduling relaunch")
 
 # ── Panda3D integration ───────────────────────────────────────────────────────
 
