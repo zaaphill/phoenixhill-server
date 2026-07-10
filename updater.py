@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.13"
+VERSION = "1.1.14"
 
 def _version_url():
     try:
@@ -163,13 +163,15 @@ def _schedule_relaunch(current, staging):
     cp  = current.replace("'", "''")
     pid = os.getpid()
     ps_cmd = (
-        # Wait for this process to exit by PID (much more reliable than fixed sleep)
+        # Wait up to 30 s for the game to exit normally
         f"$dl=(Get-Date).AddSeconds(30); "
         f"while((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date)-lt $dl){{Start-Sleep 1}}; "
+        # Force-kill if still alive (covers cases where Python exit hangs)
+        f"Stop-Process -Id {pid} -Force -EA SilentlyContinue; "
         f"Start-Sleep 2; "
-        # Rename staging → current, retry up to 30 s for AV/file locks
+        # Move new EXE into place, retry up to 30 s for AV/file locks
         f"$ok=$false; for($i=0;$i -lt 30;$i++){{try{{Move-Item -Path '{sp}' -Destination '{cp}' -Force -EA Stop;$ok=$true;break}}catch{{Start-Sleep 1}}}}; "
-        # Only launch if rename worked
+        # Only relaunch if the move worked
         f"if($ok){{Start-Process '{cp}'}}"
     )
     _log("Scheduling relaunch")
@@ -274,12 +276,9 @@ def _show_dialog(game, new_ver, dl_url):
 
         def _done_cb():
             _prog[0] = 1.0
-            # Force-exit after showing 100% so PowerShell can detect PID gone.
-            # os._exit(0) bypasses Panda3D shutdown hooks that can block forever.
-            def _exit(task):
-                os._exit(0)
-                return task.done
-            game.taskMgr.doMethodLater(0.6, _exit, "_upd_exit", appendTask=True)
+            # threading.Timer bypasses the Panda3D C++ task runner entirely.
+            # os._exit(0) skips all Python/Panda3D cleanup that can hang.
+            threading.Timer(0.8, lambda: os._exit(0)).start()
 
         def _err_cb(msg):
             status["text"] = f"Error — {msg}"
