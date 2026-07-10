@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.16"
+VERSION = "1.1.17"
 
 def _version_url():
     try:
@@ -157,22 +157,42 @@ def _schedule_relaunch(current, staging):
     Launch a hidden PowerShell process that:
       1. Waits for THIS process (by PID) to fully exit, up to 30 s.
       2. Retries Move-Item staging → current up to 30 times (handles AV locks).
-      3. Launches the renamed EXE only if the rename succeeded.
+      3. Uses File.Replace() (atomic Windows API) to swap the EXE — far more
+         resilient to AV/OneDrive/Defender transient locks than Move-Item.
+      4. Retries Start-Process up to 20 times (AV may scan before launch).
+      All steps logged to _LOG_PATH so we can see exactly where it stops.
     """
     sp  = staging.replace("'", "''")
     cp  = current.replace("'", "''")
+    lp  = _LOG_PATH.replace("'", "''")
     pid = os.getpid()
     ps_cmd = (
-        # Wait up to 30 s for the game to exit normally
+        # Logging helper that appends to the same log file Python uses
+        f"function Log($m){{try{{Add-Content -Path '{lp}' -Value \"$([DateTime]::Now.ToString('HH:mm:ss'))  PS: $m\"}}catch{{}}}}; "
+        # Wait up to 30 s for game to exit normally, then force-kill
+        f"Log 'started, waiting for PID {pid}'; "
         f"$dl=(Get-Date).AddSeconds(30); "
         f"while((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date)-lt $dl){{Start-Sleep 1}}; "
-        # Force-kill if still alive (covers cases where Python exit hangs)
         f"Stop-Process -Id {pid} -Force -EA SilentlyContinue; "
+        f"Log 'process gone, sleeping 2s'; "
         f"Start-Sleep 2; "
-        # Move new EXE into place, retry up to 30 s for AV/file locks
-        f"$ok=$false; for($i=0;$i -lt 30;$i++){{try{{Move-Item -Path '{sp}' -Destination '{cp}' -Force -EA Stop;$ok=$true;break}}catch{{Start-Sleep 1}}}}; "
-        # Only relaunch if the move worked
-        f"if($ok){{Start-Process '{cp}'}}"
+        # File.Replace is atomic and far more resilient to AV/OneDrive locks than Move-Item
+        f"$ok=$false; "
+        f"for($i=0;$i -lt 30;$i++){{"
+            f"try{{"
+                f"[System.IO.File]::Replace('{sp}','{cp}','{cp}.bak');"
+                f"Remove-Item '{cp}.bak' -Force -EA SilentlyContinue;"
+                f"$ok=$true; Log \"replace ok attempt $i\"; break"
+            f"}}catch{{"
+                f"Log \"attempt $i failed: $($_.Exception.Message)\"; Start-Sleep 1"
+            f"}}}}; "
+        # Retry Start-Process too — launch can also race with AV scanning the new EXE
+        f"if($ok){{"
+            f"Log 'launching'; "
+            f"for($j=0;$j -lt 20;$j++){{"
+                f"try{{Start-Process '{cp}'; Log 'launch ok'; break}}"
+                f"catch{{Log \"launch $j failed: $($_.Exception.Message)\"; Start-Sleep 1}}"
+            f"}}}}else{{Log 'all replace attempts failed'}}"
     )
     _log("Scheduling relaunch")
 
