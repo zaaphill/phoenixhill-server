@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.18"
+VERSION = "1.1.19"
 
 def _version_url():
     try:
@@ -162,43 +162,53 @@ def _schedule_relaunch(current, staging):
       4. Retries Start-Process up to 20 times (AV may scan before launch).
       All steps logged to _LOG_PATH so we can see exactly where it stops.
     """
+    import base64
     sp  = staging.replace("'", "''")
     cp  = current.replace("'", "''")
     lp  = _LOG_PATH.replace("'", "''")
     pid = os.getpid()
-    ps_cmd = (
-        # Logging helper that appends to the same log file Python uses
-        f"function Log($m){{try{{Add-Content -Path '{lp}' -Value \"$([DateTime]::Now.ToString('HH:mm:ss'))  PS: $m\"}}catch{{}}}}; "
-        # Wait up to 30 s for game to exit normally, then force-kill
-        f"Log 'started, waiting for PID {pid}'; "
-        f"$dl=(Get-Date).AddSeconds(30); "
-        f"while((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date)-lt $dl){{Start-Sleep 1}}; "
-        f"Stop-Process -Id {pid} -Force -EA SilentlyContinue; "
-        f"Log 'process gone, sleeping 2s'; "
-        f"Start-Sleep 2; "
-        # File.Replace is atomic and far more resilient to AV/OneDrive locks than Move-Item
-        f"$ok=$false; "
-        f"for($i=0;$i -lt 30;$i++){{"
-            f"try{{"
-                f"[System.IO.File]::Replace('{sp}','{cp}','{cp}.bak');"
-                f"Remove-Item '{cp}.bak' -Force -EA SilentlyContinue;"
-                f"$ok=$true; Log \"replace ok attempt $i\"; break"
-            f"}}catch{{"
-                f"Log \"attempt $i failed: $($_.Exception.Message)\"; Start-Sleep 1"
-            f"}}}}; "
-        # Retry Start-Process too — launch can also race with AV scanning the new EXE
-        f"if($ok){{"
-            f"Log 'launching'; "
-            f"for($j=0;$j -lt 20;$j++){{"
-                f"try{{Start-Process '{cp}'; Log 'launch ok'; break}}"
-                f"catch{{Log \"launch $j failed: $($_.Exception.Message)\"; Start-Sleep 1}}"
-            f"}}}}else{{Log 'all replace attempts failed'}}"
-    )
+
+    # Build the script as a plain readable string — no quoting headaches.
+    # -EncodedCommand accepts Base64 UTF-16-LE and bypasses all shell quoting.
+    ps_script = f"""
+function Log($m) {{
+    try {{ Add-Content -Path '{lp}' -Value "$([DateTime]::Now.ToString('HH:mm:ss'))  PS: $m" }} catch {{}}
+}}
+Log 'started, waiting for PID {pid}'
+$dl = (Get-Date).AddSeconds(30)
+while ((Get-Process -Id {pid} -EA SilentlyContinue) -and (Get-Date) -lt $dl) {{ Start-Sleep 1 }}
+Stop-Process -Id {pid} -Force -EA SilentlyContinue
+Log 'process gone, sleeping 2s'
+Start-Sleep 2
+$ok = $false
+for ($i = 0; $i -lt 30; $i++) {{
+    try {{
+        [System.IO.File]::Replace('{sp}', '{cp}', '{cp}.bak')
+        Remove-Item '{cp}.bak' -Force -EA SilentlyContinue
+        $ok = $true
+        Log "replace ok attempt $i"
+        break
+    }} catch {{
+        Log "attempt $i failed: $($_.Exception.Message)"
+        Start-Sleep 1
+    }}
+}}
+if ($ok) {{
+    Log 'launching'
+    for ($j = 0; $j -lt 20; $j++) {{
+        try {{ Start-Process '{cp}'; Log 'launch ok'; break }}
+        catch {{ Log "launch $j failed: $($_.Exception.Message)"; Start-Sleep 1 }}
+    }}
+}} else {{
+    Log 'all replace attempts failed'
+}}
+"""
+    encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
     _log("Scheduling relaunch")
 
     DETACHED = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
-        ["powershell.exe", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+        ["powershell.exe", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
         creationflags=DETACHED,
         close_fds=True,
         stdin=subprocess.DEVNULL,
