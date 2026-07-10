@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.12"
+VERSION = "1.1.13"
 
 def _version_url():
     try:
@@ -274,9 +274,10 @@ def _show_dialog(game, new_ver, dl_url):
 
         def _done_cb():
             _prog[0] = 1.0
-            # Give the anim task one frame to show 100%, then exit cleanly.
+            # Force-exit after showing 100% so PowerShell can detect PID gone.
+            # os._exit(0) bypasses Panda3D shutdown hooks that can block forever.
             def _exit(task):
-                game.userExit()
+                os._exit(0)
                 return task.done
             game.taskMgr.doMethodLater(0.6, _exit, "_upd_exit", appendTask=True)
 
