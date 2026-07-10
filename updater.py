@@ -16,7 +16,6 @@ Swap strategy:
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.11"
+VERSION = "1.1.12"
 
 def _version_url():
     try:
@@ -93,12 +92,11 @@ def check_for_update(on_available):
 
 def download_update(url, on_progress, on_done, on_error):
     """
-    Downloads *url* to %TEMP%, copies it as a staging file beside the running
-    EXE, then schedules a hidden PowerShell process to rename it over the EXE
-    and relaunch after this process exits.
+    Downloads *url* to %TEMP%, then schedules a hidden PowerShell process to
+    move it over the running EXE and relaunch after this process exits.
 
-    Copying to a staging file (new name) avoids the lock that Windows holds on
-    the running EXE — only the post-exit rename touches the locked file.
+    Keeping the file in %TEMP% avoids WinError 32 — no copy to the EXE
+    directory while the game is running; PowerShell does the move after exit.
 
     Callbacks are called from the worker thread:
       on_progress(float 0..1), on_done(), on_error(str)
@@ -129,20 +127,14 @@ def download_update(url, on_progress, on_done, on_error):
 
             _log(f"Download complete ({done} bytes).")
 
-            # Step 2: copy to a staging file beside the EXE.
-            # We use a NEW filename (_phill_new.exe) so there is no lock
-            # conflict — Windows only locks the EXE that is currently running,
-            # not new files created in the same directory.
+            # Step 2: schedule a move from %TEMP% directly to the EXE path.
+            # Keeping the file in %TEMP% avoids WinError 32 — no need to copy
+            # to the EXE directory while the game is still running.
             current = sys.executable
-            exe_dir = os.path.dirname(current)
-            staging = os.path.join(exe_dir, "_phill_new.exe")
-            shutil.copy2(tmp, staging)
-            os.remove(tmp)
-            tmp = None
-            _log(f"Staged at {staging}.  Scheduling post-exit rename → {current}")
-
-            # Step 3: schedule the rename + relaunch for after this process exits.
-            _schedule_relaunch(current, staging)
+            _log(f"Scheduling post-exit install: {tmp} → {current}")
+            tmp_for_ps = tmp
+            tmp = None  # prevent cleanup in except block
+            _schedule_relaunch(current, tmp_for_ps)
 
             on_done()
 
