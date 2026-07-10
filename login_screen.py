@@ -64,12 +64,12 @@ _PAGE_SIZE  = 15     # 5 cols × 3 rows
 
 # ── Shop screen layout constants ───────────────────────────────────────────
 _SHOP_COLS  = 6
-_SHOP_CW    = 0.34   # card full width
-_SHOP_CTH   = 0.34   # thumbnail full height (square, same as width)
-_SHOP_CIH   = 0.13   # info area full height
-_SHOP_CH    = 0.47   # total card full height (3 rows fit above pagination)
-_SHOP_GAPX  = 0.03
-_SHOP_GAPY  = 0.03
+_SHOP_CW    = 0.36   # card full width
+_SHOP_CTH   = 0.36   # thumbnail height — must equal CW for square (no distortion)
+_SHOP_CIH   = 0.09   # info strip height
+_SHOP_CH    = 0.45   # total card height (CTH + CIH)
+_SHOP_GAPX  = 0.026
+_SHOP_GAPY  = 0.026
 _SHOP_PAGE  = 18     # 6 × 3
 
 
@@ -250,7 +250,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.068, 0.068),
             parent=self._splash, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
             _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
@@ -478,6 +478,8 @@ class LoginScreenMixin:
         self.apply_avatar_colors()
         self._apply_equipped_items_bg()
         self._build_browse_screen()
+        if hasattr(self, '_avatar_start_prefetch'):
+            self._avatar_start_prefetch()
         return task.done
 
     def _show_login_task(self, task):
@@ -502,7 +504,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.068, 0.068),
             parent=root, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
             _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
@@ -676,6 +678,8 @@ class LoginScreenMixin:
             self._login_ui.destroy()
             self._login_ui = None
         self._build_browse_screen()
+        if hasattr(self, '_avatar_start_prefetch'):
+            self._avatar_start_prefetch()
         return task.done
 
     def _on_login_fail(self, msg, task):
@@ -693,7 +697,7 @@ class LoginScreenMixin:
             frameSize=(-2.5, 2.5, -0.068, 0.068),
             parent=self._join_splash, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
             _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
@@ -786,46 +790,78 @@ class LoginScreenMixin:
         # ── Top nav bar (Build tab active) ─────────────────────────────────
         nav = DirectFrame(
             frameColor=_RS_NAV,
-            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            frameSize=(-2.5, 2.5, -0.076, 0.090),
             parent=bg, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
-            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lw = 0.075 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
-                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
-                              parent=nav, pos=(-1.55, 0, -0.008))
+                              frameSize=(-_lw/2, _lw/2, -0.038, 0.038),
+                              parent=nav, pos=(-1.55, 0, 0.005))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
+        _nav_icons = ["games.png", "avatar.png", "shirt.png", "buildd.png", "Settings.png"]
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",    self._build_browse_screen),
             ("Avatar",   self._build_avatar_screen),
-            ("Shop",     self._build_shop_screen),
-            ("Build",    self._build_main_menu),
+            ("Catalog",  self._build_shop_screen),
+            ("Workshop", self._build_main_menu),
             ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 3)
-            DirectButton(
-                text=tab_text,
-                text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.032,
+            _btn = DirectButton(
+                text="",
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.095, 0.095, -0.052, 0.052),
-                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.072, 0.075),
+                parent=nav, pos=((i - 2) * 0.24, 0, 0.005),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
+            _it = None
+            try:
+                _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), _nav_icons[i])))
+            except Exception:
+                pass
+            if _it:
+                _iw = 0.074 * (_it.getXSize() / max(_it.getYSize(), 1))
+                _if2 = DirectFrame(
+                    frameTexture=_it, frameColor=(1, 1, 1, 1),
+                    frameSize=(-_iw/2, _iw/2, -0.034, 0.034),
+                    parent=_btn, pos=(0, 0, 0.022),
+                )
+                _if2.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.029,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.051),
+            )
+        _nav_av_tex = self._get_nav_avatar_texture()
+        if _nav_av_tex:
+            _nav_av_f = DirectFrame(
+                frameTexture=_nav_av_tex, frameColor=(1, 1, 1, 1),
+                frameSize=(-0.065, 0.065, -0.065, 0.065),
+                parent=nav, pos=(1.15, 0, 0.005),
+            )
+            _nav_av_f.setTransparency(TransparencyAttrib.MAlpha)
+            if not hasattr(self, '_nav_avatar_frames'):
+                self._nav_avatar_frames = []
+            self._nav_avatar_frames.append(_nav_av_f)
         DirectLabel(
             text=self._session_username or "",
-            text_fg=_RS_GRAY, text_scale=0.028,
+            text_fg=_RS_GRAY, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.20, 0, -0.014),
+            parent=nav, pos=(1.07, 0, -0.008),
+            text_align=TextNode.ARight,
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.55, 0, -0.014),
+            parent=nav, pos=(1.55, 0, 0.005),
             relief=1, command=self._do_logout,
         )
 
@@ -1261,140 +1297,222 @@ class LoginScreenMixin:
         bg = DirectFrame(frameColor=_RS_BG, frameSize=(-3, 3, -3, 3))
         self._main_menu_ui = bg
 
-        # ── Top nav bar (Shop tab active) ──────────────────────────────
+        # ── Top nav bar (Catalog tab active) ───────────────────────────
         nav = DirectFrame(
             frameColor=_RS_NAV,
-            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            frameSize=(-2.5, 2.5, -0.076, 0.090),
             parent=bg, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
-            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lw = 0.075 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
-                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
-                              parent=nav, pos=(-1.55, 0, -0.008))
+                              frameSize=(-_lw/2, _lw/2, -0.038, 0.038),
+                              parent=nav, pos=(-1.55, 0, 0.005))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
+        _nav_icons = ["games.png", "avatar.png", "shirt.png", "buildd.png", "Settings.png"]
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",    self._build_browse_screen),
             ("Avatar",   self._build_avatar_screen),
-            ("Shop",     self._build_shop_screen),
-            ("Build",    self._build_main_menu),
+            ("Catalog",  self._build_shop_screen),
+            ("Workshop", self._build_main_menu),
             ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 2)
-            DirectButton(
-                text=tab_text,
-                text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.032,
+            _btn = DirectButton(
+                text="",
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.095, 0.095, -0.052, 0.052),
-                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.072, 0.075),
+                parent=nav, pos=((i - 2) * 0.24, 0, 0.005),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
+            _it = None
+            try:
+                _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), _nav_icons[i])))
+            except Exception:
+                pass
+            if _it:
+                _iw = 0.074 * (_it.getXSize() / max(_it.getYSize(), 1))
+                _if2 = DirectFrame(
+                    frameTexture=_it, frameColor=(1, 1, 1, 1),
+                    frameSize=(-_iw/2, _iw/2, -0.034, 0.034),
+                    parent=_btn, pos=(0, 0, 0.022),
+                )
+                _if2.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.029,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.051),
+            )
+        _nav_av_tex = self._get_nav_avatar_texture()
+        if _nav_av_tex:
+            _nav_av_f = DirectFrame(
+                frameTexture=_nav_av_tex, frameColor=(1, 1, 1, 1),
+                frameSize=(-0.065, 0.065, -0.065, 0.065),
+                parent=nav, pos=(1.15, 0, 0.005),
+            )
+            _nav_av_f.setTransparency(TransparencyAttrib.MAlpha)
+            if not hasattr(self, '_nav_avatar_frames'):
+                self._nav_avatar_frames = []
+            self._nav_avatar_frames.append(_nav_av_f)
         DirectLabel(
             text=self._session_username or "",
-            text_fg=_RS_GRAY, text_scale=0.028,
+            text_fg=_RS_GRAY, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.20, 0, -0.014),
+            parent=nav, pos=(1.07, 0, -0.008),
+            text_align=TextNode.ARight,
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.55, 0, -0.014),
+            parent=nav, pos=(1.55, 0, 0.005),
             relief=1, command=self._do_logout,
         )
 
-        # ── Toolbar with category filter ───────────────────────────────
-        _TOOL_BG   = (0.62, 0.55, 0.78, 1.0)
-        _TAB_ON    = (0.48, 0.22, 0.72, 1.0)
-        _TAB_OFF   = (0.55, 0.45, 0.76, 1.0)
-        DirectFrame(
-            frameColor=_TOOL_BG,
-            frameSize=(-2.5, 2.5, -0.038, 0.038),
-            parent=bg, pos=(0, 0, 0.802),
+        # ── RIGHT SIDEBAR (categories) ─────────────────────────────────
+        _SB_BG  = (0.62, 0.58, 0.78, 1.0)
+        _SEL_C  = (0.44, 0.32, 0.64, 1.0)
+        _NORM_C = (0.55, 0.46, 0.72, 1.0)
+        _TEXT_H = (0.12, 0.08, 0.28, 1.0)
+        sidebar = DirectFrame(
+            frameColor=_SB_BG,
+            frameSize=(-0.27, 0.27, -0.87, 0.81),
+            parent=bg, pos=(1.49, 0, -0.05),
         )
-        for ci, (cat_lbl, cat_val) in enumerate([("All", "all"), ("T-Shirts", "tshirt"), ("Shirts", "shirt"), ("Pants", "pants"), ("Hats", "hat"), ("Face", "face")]):
-            is_on = (cat_val == self._shop_cat_filter)
-            def _make_cat_cmd(v):
+        _BTN_H = 0.25
+        _GAP   = 0.015
+        _CATS  = [
+            ("All",      "all",    None),
+            ("Hats",     "hat",    "hat.png"),
+            ("Faces",    "face",   "face.png"),
+            ("Shirts",   "shirt",  "shirt.png"),
+            ("Pants",    "pants",  "pantss.png"),
+            ("T-Shirts", "tshirt", "t shirt.png"),
+        ]
+        _n      = len(_CATS)
+        _total  = _n * _BTN_H + (_n - 1) * _GAP
+        _start_z = (-0.87 + 0.81) / 2 + _total / 2 - _BTN_H / 2
+        cur_cat = getattr(self, "_shop_cat_filter", "all")
+        self._shop_sidebar_buttons = {}
+        for _i, (_lbl, _val, _ico) in enumerate(_CATS):
+            _bz     = _start_z - _i * (_BTN_H + _GAP)
+            _is_sel = (_val == cur_cat)
+            _has_ico = (_ico is not None)
+            def _make_cmd(_v=_val):
                 def _cmd():
-                    self._shop_cat_filter = v
+                    self._shop_cat_filter = _v
                     self._build_shop_screen()
                 return _cmd
-            DirectButton(
-                text=cat_lbl,
-                text_fg=_RS_WHITE, text_scale=0.022,
-                frameColor=_TAB_ON if is_on else _TAB_OFF,
-                frameSize=(-0.082, 0.082, -0.028, 0.028),
-                parent=bg,
-                pos=(-0.85 + ci * 0.34, 0, 0.800),
-                relief=1,
-                command=_make_cat_cmd(cat_val),
+            _btn = DirectButton(
+                text="",
+                frameColor=_SEL_C if _is_sel else _NORM_C,
+                frameSize=(-0.27, 0.27, -_BTN_H / 2, _BTN_H / 2),
+                parent=sidebar, pos=(0, 0, _bz),
+                relief=1, command=_make_cmd(),
             )
+            self._shop_sidebar_buttons[_val] = _btn
+            if _has_ico:
+                _ip = os.path.join(os.path.dirname(os.path.abspath(__file__)), _ico)
+                if os.path.exists(_ip):
+                    _it = self.loader.loadTexture(Filename.fromOsSpecific(_ip))
+                    if _it:
+                        _ih = 0.11
+                        _iw = min(_ih * (_it.getXSize() / max(_it.getYSize(), 1)), 0.22)
+                        _if = DirectFrame(
+                            frameTexture=_it, frameColor=(1, 1, 1, 1),
+                            frameSize=(-_iw / 2, _iw / 2, -_ih / 2, _ih / 2),
+                            parent=_btn, pos=(0, 0, 0.038),
+                        )
+                        _if.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=_lbl, text_fg=_TEXT_H, text_scale=0.036,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.072 if _has_ico else 0.0),
+            )
+
+        # ── CONTENT PANEL (search + grid + pagination) ─────────────────
+        _PANEL_BG  = (0.68, 0.65, 0.82, 1.0)
+        _PANEL_DIV = (0.50, 0.40, 0.68, 1.0)
+        _TEXT_M    = (0.22, 0.15, 0.40, 1.0)
+        content = DirectFrame(
+            frameColor=_PANEL_BG,
+            frameSize=(-1.33, 1.33, -0.87, 0.81),
+            parent=bg, pos=(-0.35, 0, -0.05),
+        )
+
+        # Search bar
+        _search_hints = {"hat": "Hats", "face": "Faces", "shirt": "Shirts",
+                         "pants": "Pants", "tshirt": "T-Shirts"}
+        _ph = f"Search for {_search_hints[cur_cat]}..." if cur_cat in _search_hints else "Search..."
         _sse = DirectEntry(
-            text="", initialText=self._shop_search or "Search...",
-            width=13, numLines=1, scale=0.026,
+            text="", initialText=self._shop_search or _ph,
+            width=42, numLines=1, scale=0.026,
             text_fg=(0.15, 0.10, 0.25, 1),
             frameColor=(0.93, 0.91, 0.97, 1),
             relief=1,
-            parent=bg, pos=(1.22, 0, 0.790),
+            parent=content, pos=(-1.20, 0, 0.72),
             command=self._on_shop_search,
-            focusInCommand=lambda e=None: _sse.enterText("") if _sse.get() == "Search..." else None,
-            focusOutCommand=lambda e=None: _sse.enterText("Search...") if not _sse.get().strip() else None,
+            focusInCommand=lambda e=None: _sse.enterText("") if _sse.get() == _ph else None,
+            focusOutCommand=lambda e=None: _sse.enterText(_ph) if not _sse.get().strip() else None,
         )
         self._shop_search_entry = _sse
 
-        # ── Grid container with Loading label ──────────────────────────
+        # Grid container
         self._shop_grid_parent = DirectFrame(
             frameColor=(0, 0, 0, 0),
-            frameSize=(-2.0, 2.0, -1.80, 0.72),
-            parent=bg,
+            frameSize=(-1.33, 1.33, -0.87, 0.64),
+            parent=content,
         )
-
         self._shop_loading_lbl = DirectLabel(
             text="Loading...",
-            text_fg=_RS_GRAY, text_scale=0.040,
+            text_fg=_TEXT_M, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=self._shop_grid_parent, pos=(0, 0, 0),
+            parent=self._shop_grid_parent, pos=(0, 0, 0.10),
         )
 
-        # ── Pagination ──────────────────────────────────────────────────
+        # Pagination
         self._shop_page = 0
-        _DIM = (0.40, 0.35, 0.55, 1.0)
+        _DIM = (0.40, 0.35, 0.52, 1.0)
         self._shop_prev_btn = DirectButton(
-            text="< Prev",
-            text_fg=_RS_WHITE, text_scale=0.030,
-            frameColor=_DIM,
-            frameSize=(-0.070, 0.070, -0.034, 0.034),
-            parent=bg, pos=(-0.24, 0, -0.913),
-            relief=1,
-            command=self._shop_goto_page,
-            extraArgs=[-1],
+            text="<",
+            text_fg=_TEXT_H, text_scale=0.038,
+            frameColor=_PANEL_DIV,
+            frameSize=(-0.090, 0.090, -0.038, 0.038),
+            parent=content, pos=(-0.30, 0, -0.820),
+            relief=1, command=self._shop_goto_page, extraArgs=[-1],
         )
         self._shop_page_lbl = DirectLabel(
-            text="Page 1",
-            text_fg=_RS_GRAY, text_scale=0.030,
+            text="Page 1/1",
+            text_fg=_TEXT_H, text_scale=0.030,
             frameColor=(0, 0, 0, 0),
-            parent=bg, pos=(0, 0, -0.913),
+            parent=content, pos=(0, 0, -0.820),
         )
         self._shop_next_btn = DirectButton(
-            text="Next >",
-            text_fg=_RS_WHITE, text_scale=0.030,
-            frameColor=_DIM,
-            frameSize=(-0.070, 0.070, -0.034, 0.034),
-            parent=bg, pos=(0.24, 0, -0.913),
-            relief=1,
-            command=self._shop_goto_page,
-            extraArgs=[+1],
+            text=">",
+            text_fg=_TEXT_H, text_scale=0.038,
+            frameColor=_PANEL_DIV,
+            frameSize=(-0.090, 0.090, -0.038, 0.038),
+            parent=content, pos=(0.30, 0, -0.820),
+            relief=1, command=self._shop_goto_page, extraArgs=[+1],
         )
 
         threading.Thread(target=self._fetch_shop_items_thread, daemon=True).start()
 
     def _fetch_shop_items_thread(self):
-        items_result, items_err = auth_client.list_shop_items()
-        all_items = (items_result or {}).get("items", [])
+        catalog_cache = getattr(self, '_shop_items_full_cache', None)
+        if catalog_cache is not None:
+            all_items = catalog_cache
+            items_err = None
+        else:
+            items_result, items_err = auth_client.list_shop_items()
+            all_items = (items_result or {}).get("items", [])
+            self._shop_items_full_cache = all_items
         cat = getattr(self, "_shop_cat_filter", "all")
         if cat == "all":
             items = all_items
@@ -1411,12 +1529,317 @@ class LoginScreenMixin:
                      and not self._item_is_shirt(it)
                      and not self._item_is_pants(it)
                      and not self._item_is_face(it)]
-        owned_result, _ = auth_client.get_owned_items(self._session_token)
-        owned = {it["id"] for it in (owned_result or {}).get("items", [])}
+        owned_cache = getattr(self, '_avatar_items_full_cache', None)
+        if owned_cache is not None:
+            owned = {it["id"] for it in owned_cache}
+        else:
+            owned_result, _ = auth_client.get_owned_items(self._session_token)
+            owned = {it["id"] for it in (owned_result or {}).get("items", [])}
         self.taskMgr.doMethodLater(
             0, self._draw_shop_grid_task, "_drawShopGrid",
             extraArgs=[items, items_err, owned], appendTask=True,
         )
+
+    def _get_nav_avatar_texture(self):
+        """Set up a persistent live RTT rig for the topbar avatar (head+torso portrait).
+        Uses the same approach as the avatar preview tab: a live buffer that renders every frame,
+        so clothing appears automatically when applied. Returns buf.getTexture() (live, cached).
+        PMASK bit(7) keeps the nav rig invisible to the main camera."""
+        cached = getattr(self, '_nav_avatar_tex', 'UNSET')
+        if cached != 'UNSET':
+            return cached
+        self._nav_avatar_tex = None
+        try:
+            _DEF = {
+                "head":      (244/255, 204/255,  67/255, 1),
+                "torso":     ( 23/255, 107/255, 170/255, 1),
+                "left_arm":  (244/255, 204/255,  67/255, 1),
+                "right_arm": (244/255, 204/255,  67/255, 1),
+            }
+            colors = self.load_avatar_colors()
+            PMASK  = BitMask32.bit(7)
+
+            # Rig parked at y=5000 (avatar preview=2000, shop thumbs=3000)
+            root = self.render.attachNewNode("nav_av_root")
+            root.setPos(0, 5000, 0)
+            self._nav_av_root            = root
+            self._nav_av_pmask           = PMASK
+            self._nav_av_tshirt_anchor   = None
+            self._nav_av_tshirt_np       = None
+            self._nav_av_hat_model       = None
+            self._nav_av_shirt_nodes     = []
+
+            def _box(parent, sc, pos, key):
+                m = self.loader.loadModel("models/box")
+                m.reparentTo(parent); m.setScale(*sc); m.setPos(*pos)
+                m.setColor(*colors.get(key, _DEF[key]))
+                m.setTextureOff(1); m.show(PMASK)
+                return m
+
+            self._nav_av_torso_box = _box(root, (2, 1, 2), (-1, -0.5, 2), "torso")
+            _la = root.attachNewNode("nav_av_la"); _la.setPos(-1.5, 0, 4)
+            self._nav_av_la_box = _box(_la, (1, 1, 2), (-0.5, -0.5, -2), "left_arm")
+            _ra = root.attachNewNode("nav_av_ra"); _ra.setPos(1.5, 0, 4)
+            self._nav_av_ra_box = _box(_ra, (1, 1, 2), (-0.5, -0.5, -2), "right_arm")
+            self._nav_av_la_piv = _la
+            self._nav_av_ra_piv = _ra
+
+            _hd = self.create_cylinder(radius=0.7, height=1.1, segments=16)
+            _hd.reparentTo(root); _hd.setColor(*colors.get("head", _DEF["head"]))
+            _hd.setTwoSided(True); _hd.setTextureOff(1); _hd.setPos(0, 0, 4.55)
+            _hd.show(PMASK)
+            self._nav_av_head_node = _hd
+
+            # Face sprite on -Y side of head (toward camera at -Y), same as _build_preview_rig
+            _face_textures = getattr(self, '_face_textures', [])
+            self._nav_av_face_sprite  = None
+            self._nav_av_face_anchor  = None
+            if _face_textures:
+                from panda3d.core import CardMaker
+                _fcm = CardMaker('nav_av_face'); _fcm.setFrame(-0.70, 0.70, -0.55, 0.55)
+                _fa = root.attachNewNode("nav_av_face_anchor"); _fa.setPos(0, -0.72, 4.55)
+                _fnp = _fa.attachNewNode(_fcm.generate())
+                _fnp.setTransparency(TransparencyAttrib.MAlpha)
+                _fnp.setTwoSided(False); _fnp.setLightOff(); _fnp.setShaderOff()
+                _fnp.setDepthWrite(False); _fnp.setTexture(_face_textures[0])
+                _fnp.show(PMASK)
+                self._nav_av_face_sprite = _fnp
+                self._nav_av_face_anchor = _fa
+
+            # Lighting — same as avatar preview tab
+            _al = AmbientLight("nav_av_al"); _al.setColor(LColor(0.22, 0.22, 0.25, 1))
+            root.setLight(root.attachNewNode(_al))
+            _dl = DirectionalLight("nav_av_dl"); _dl.setColor(LColor(0.50, 0.50, 0.52, 1))
+            _dlnp = root.attachNewNode(_dl); _dlnp.setHpr(20, 15, 0)
+            root.setLight(_dlnp)
+
+            # Persistent 128×128 live buffer — texture updates every frame automatically
+            _buf = self.win.makeTextureBuffer("nav_av_buf", 256, 256)
+            _buf.setClearColor(LColor(0.55, 0.45, 0.76, 1.0))
+            _buf.setClearColorActive(True)
+            self._nav_av_buf = _buf
+
+            # Camera: dist=9.5 at -Y, look at z=4.85 → frame z≈2.3–7.4 (more crown visible)
+            _cn = Camera("nav_av_cam")
+            _ln = PerspectiveLens(); _ln.setFov(30.0); _ln.setAspectRatio(1.0)
+            _ln.setNearFar(0.1, 1000); _cn.setLens(_ln); _cn.setCameraMask(PMASK)
+            _cnp = self.render.attachNewNode(_cn)
+            _cnp.setPos(0, 5000 - 9.5, 4.85); _cnp.lookAt(Point3(0, 5000, 4.85))
+            _dr = _buf.makeDisplayRegion(0, 1, 0, 1); _dr.setSort(10); _dr.setCamera(_cnp)
+            self._nav_av_cam_np = _cnp
+
+            # Remove PMASK bit from main camera so it never sees the nav rig
+            self.camNode.setCameraMask(self.camNode.getCameraMask() & ~PMASK)
+
+            self._nav_avatar_tex = _buf.getTexture()
+        except Exception as _e:
+            print(f"[NAV_AVATAR] setup failed: {_e}", flush=True)
+        return self._nav_avatar_tex
+
+    def _nav_av_apply_tshirt(self, image_b64):
+        """Apply tshirt to the nav avatar rig (mirrors _preview_apply_tshirt)."""
+        from panda3d.core import CardMaker, TransparencyAttrib, Filename
+        for attr in ('_nav_av_tshirt_anchor', '_nav_av_tshirt_np'):
+            n = getattr(self, attr, None)
+            if n and not n.isEmpty(): n.removeNode()
+            setattr(self, attr, None)
+        root  = getattr(self, '_nav_av_root',  None)
+        pmask = getattr(self, '_nav_av_pmask', None)
+        if not root or root.isEmpty() or not image_b64:
+            return
+        try:
+            import base64, tempfile, os as _os2
+            raw = base64.b64decode(image_b64)
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+                tf.write(raw); tmp = tf.name
+            tex = self.loader.loadTexture(Filename.fromOsSpecific(tmp))
+            _os2.unlink(tmp)
+            if not tex: return
+            cm = CardMaker('nav_av_tshirt'); cm.setFrame(-1, 1, 0, 2)
+            anchor = root.attachNewNode("nav_av_tshirt_anchor")
+            anchor.setPos(0, -0.51, 2)
+            np_ = anchor.attachNewNode(cm.generate())
+            np_.setTexture(tex)
+            np_.setTransparency(TransparencyAttrib.MAlpha)
+            np_.setLightOff(); np_.setShaderOff()
+            np_.setDepthWrite(False); np_.setDepthOffset(3)
+            np_.show(pmask)
+            self._nav_av_tshirt_anchor = anchor
+            self._nav_av_tshirt_np     = np_
+        except Exception as e:
+            print(f"[NAV_AV_TSHIRT] {e}", flush=True)
+
+    def _nav_av_apply_hat(self, hat_data_json):
+        """Apply hat to the nav avatar rig (mirrors _preview_apply_hat)."""
+        n = getattr(self, '_nav_av_hat_model', None)
+        if n and not n.isEmpty(): n.removeNode()
+        self._nav_av_hat_model = None
+        root  = getattr(self, '_nav_av_root',  None)
+        pmask = getattr(self, '_nav_av_pmask', None)
+        if not root or root.isEmpty() or not hat_data_json: return
+        import json as _json, base64, tempfile, os as _os2, shutil
+        from panda3d.core import Filename
+        tmp_dir = None
+        try:
+            data = _json.loads(hat_data_json)
+            tmp_dir = tempfile.mkdtemp(prefix="phx_navhat_")
+            obj_tmp = _os2.path.join(tmp_dir, "hat.obj")
+            with open(obj_tmp, 'wb') as f:
+                f.write(base64.b64decode(data["obj_b64"]))
+            mtl_b64  = data.get("mtl_b64")
+            mtl_name = data.get("mtl_name") or "hat.mtl"
+            if mtl_b64:
+                with open(_os2.path.join(tmp_dir, mtl_name), 'wb') as f:
+                    f.write(base64.b64decode(mtl_b64))
+            hat_model = self.loader.loadModel(Filename.fromOsSpecific(obj_tmp))
+            shutil.rmtree(tmp_dir, ignore_errors=True); tmp_dir = None
+            if not hat_model: return
+            hat_model.setR(-90)
+            tex_b64 = data.get("texture_b64")
+            if tex_b64:
+                from panda3d.core import PNMImage, StringStream, Texture
+                raw = base64.b64decode(tex_b64); ss = StringStream(raw); pnm = PNMImage()
+                if pnm.read(ss):
+                    tex = Texture(); tex.load(pnm); hat_model.setTexture(tex, 1)
+            bs = data.get("brick_scale", [2, 2, 2]); ms = data.get("model_scale", [1, 1, 1])
+            hat_model.reparentTo(root)
+            hat_model.setScale(*[bs[i]*ms[i] for i in range(3)])
+            h0, p0, r0 = data.get("model_hpr", [0, 0, -90])
+            hat_model.setHpr(h0 + 180, p0, r0)
+            hat_model.setPos(float(data.get("x_offset", 0.0)), float(data.get("y_offset", 0.0)), 4.55 + 0.55 + float(data.get("z_offset", 0.0)))
+            hat_model.setShaderOff(); hat_model.setTwoSided(True); hat_model.show(pmask)
+            self._nav_av_hat_model = hat_model
+        except Exception as e:
+            print(f"[NAV_AV_HAT] {e}", flush=True)
+        finally:
+            if tmp_dir: shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _nav_av_apply_shirt(self, image_b64):
+        """Apply shirt to the nav avatar rig (mirrors _preview_apply_shirt)."""
+        for n in getattr(self, '_nav_av_shirt_nodes', []):
+            if n and not n.isEmpty(): n.removeNode()
+        self._nav_av_shirt_nodes = []
+        root   = getattr(self, '_nav_av_root',   None)
+        pmask  = getattr(self, '_nav_av_pmask',  None)
+        la_piv = getattr(self, '_nav_av_la_piv', None)
+        ra_piv = getattr(self, '_nav_av_ra_piv', None)
+        if not root or root.isEmpty() or not image_b64: return
+        try:
+            import base64
+            from panda3d.core import PNMImage, StringStream, Texture, TransparencyAttrib
+            from character import CharacterMixin
+            raw = base64.b64decode(image_b64); ss = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss): return
+            tex = Texture(); tex.load(pnm)
+            tex.setMagfilter(Texture.FTLinear); tex.setMinfilter(Texture.FTLinear)
+            R = CharacterMixin._SHIRT_REGIONS
+
+            def attach(parent, reg_map, w, d, h, pos):
+                if parent is None or parent.isEmpty(): return None
+                node = CharacterMixin._make_shirt_box_geom(w, d, h, reg_map)
+                np_ = parent.attachNewNode(node)
+                np_.setPos(*pos); np_.setTexture(tex)
+                np_.setTwoSided(True); np_.setShaderOff()
+                np_.setDepthOffset(2); np_.setTransparency(TransparencyAttrib.MAlpha)
+                if pmask: np_.show(pmask)
+                return np_
+
+            # Camera at -Y → swap front↔back and left↔right (same as _preview_apply_shirt)
+            nodes = [n for n in [
+                attach(root, {
+                    'front': R['torso_back'],  'back':  R['torso_front'],
+                    'left':  R['torso_right'], 'right': R['torso_left'],
+                    'top':   R['torso_up'],    'bottom':R['torso_down'],
+                }, 2, 1, 2, (-1, -0.5, 2)),
+                attach(ra_piv, {
+                    'front': R['rarm_back'],  'back':  R['rarm_front'],
+                    'left':  R['rarm_right'], 'right': R['rarm_left'],
+                    'top':   R['rarm_up'],    'bottom':R['rarm_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+                attach(la_piv, {
+                    'front': R['larm_back'],  'back':  R['larm_front'],
+                    'left':  R['larm_right'], 'right': R['larm_left'],
+                    'top':   R['larm_up'],    'bottom':R['larm_down'],
+                }, 1, 1, 2, (-0.5, -0.5, -2)),
+            ] if n is not None]
+            self._nav_av_shirt_nodes = nodes
+        except Exception as e:
+            print(f"[NAV_AV_SHIRT] {e}", flush=True)
+
+    def _nav_av_apply_face(self, frames_b64):
+        """Update the nav avatar face sprite with a custom face texture (frame 0)."""
+        root  = getattr(self, '_nav_av_root',  None)
+        pmask = getattr(self, '_nav_av_pmask', None)
+        if not root or root.isEmpty() or not frames_b64: return
+        try:
+            import base64
+            from panda3d.core import PNMImage, StringStream, Texture, CardMaker
+            raw = base64.b64decode(frames_b64[0])
+            ss  = StringStream(raw); pnm = PNMImage()
+            if not pnm.read(ss): return
+            tex = Texture(); tex.load(pnm)
+            sprite = getattr(self, '_nav_av_face_sprite', None)
+            if sprite and not sprite.isEmpty():
+                sprite.setTexture(tex)
+            else:
+                # Face sprite didn't exist at rig build time — create it now
+                _fcm = CardMaker('nav_av_face'); _fcm.setFrame(-0.70, 0.70, -0.55, 0.55)
+                _fa = root.attachNewNode("nav_av_face_anchor"); _fa.setPos(0, -0.72, 4.55)
+                _fnp = _fa.attachNewNode(_fcm.generate())
+                _fnp.setTransparency(TransparencyAttrib.MAlpha)
+                _fnp.setTwoSided(False); _fnp.setLightOff(); _fnp.setShaderOff()
+                _fnp.setDepthWrite(False); _fnp.setTexture(tex)
+                _fnp.show(pmask)
+                self._nav_av_face_sprite = _fnp
+                self._nav_av_face_anchor = _fa
+        except Exception as e:
+            print(f"[NAV_AV_FACE] {e}", flush=True)
+
+    def _nav_av_cleanup(self):
+        """Destroy the nav avatar rig and buffer (call on logout or session end)."""
+        buf = getattr(self, '_nav_av_buf', None)
+        if buf:
+            try: self.graphicsEngine.removeWindow(buf)
+            except Exception: pass
+        self._nav_av_buf = None
+        for attr in ('_nav_av_cam_np', '_nav_av_tshirt_anchor', '_nav_av_tshirt_np',
+                     '_nav_av_hat_model', '_nav_av_face_anchor', '_nav_av_root'):
+            n = getattr(self, attr, None)
+            if n:
+                try:
+                    if not n.isEmpty(): n.removeNode()
+                except Exception: pass
+            setattr(self, attr, None)
+        for n in getattr(self, '_nav_av_shirt_nodes', []):
+            try:
+                if n and not n.isEmpty(): n.removeNode()
+            except Exception: pass
+        self._nav_av_shirt_nodes = []
+        self._nav_av_face_sprite = None
+        self._nav_avatar_tex     = 'UNSET'
+        try:
+            PMASK = BitMask32.bit(7)
+            self.camNode.setCameraMask(self.camNode.getCameraMask() | PMASK)
+        except Exception: pass
+
+    def _nav_av_update_colors(self):
+        """Sync nav avatar rig body/head colors with the current avatar colors."""
+        colors = self.load_avatar_colors()
+        _DEF = {
+            "head":      (244/255, 204/255,  67/255, 1),
+            "torso":     ( 23/255, 107/255, 170/255, 1),
+            "left_arm":  (244/255, 204/255,  67/255, 1),
+            "right_arm": (244/255, 204/255,  67/255, 1),
+        }
+        for attr, key in [
+            ('_nav_av_torso_box', 'torso'),
+            ('_nav_av_la_box',    'left_arm'),
+            ('_nav_av_ra_box',    'right_arm'),
+            ('_nav_av_head_node', 'head'),
+        ]:
+            n = getattr(self, attr, None)
+            if n and not n.isEmpty():
+                n.setColor(*colors.get(key, _DEF[key]))
 
     def _render_shop_thumbnails(self, items, buf_w=300, buf_h=173):
         """RTT-render one avatar+tshirt/shirt frame per item; returns {item_id: Texture}."""
@@ -2033,8 +2456,12 @@ class LoginScreenMixin:
         cards_frame = DirectFrame(frameColor=(0, 0, 0, 0), frameSize=(-3, 3, -3, 3), parent=frame)
         self._shop_grid_cards  = cards_frame
         self._shop_thumb_frames = {}
-        _CARD_BG  = (0.84, 0.81, 0.93, 1.0)
-        _NAME_COL = _RS_WHITE
+        _CARD_BG  = (0.52, 0.44, 0.70, 1.0)
+        _OWN_BG   = (0.38, 0.26, 0.58, 1.0)
+        _THUMB_BG = (0.48, 0.38, 0.66, 1.0)
+        _TEXT_H   = (0.12, 0.08, 0.28, 1.0)
+        _TEXT_D   = (0.32, 0.22, 0.50, 1.0)
+        _PANEL_DIV = (0.50, 0.40, 0.68, 1.0)
         if thumb_textures is None:
             thumb_textures = {}
 
@@ -2044,58 +2471,76 @@ class LoginScreenMixin:
         page     = getattr(self, "_shop_page", 0)
         max_page = max(0, (len(items) - 1) // _SHOP_PAGE)
         page_items = items[page * _SHOP_PAGE:(page + 1) * _SHOP_PAGE]
+        owned_ids  = getattr(self, "_shop_owned_ids", set())
 
         total_w  = _SHOP_COLS * _SHOP_CW + (_SHOP_COLS - 1) * _SHOP_GAPX
         left_cx  = -total_w / 2 + _SHOP_CW / 2
-        GRID_TOP = 0.68
+        GRID_TOP = 0.64
         THUMB_CY = _SHOP_CH / 2 - _SHOP_CTH / 2
-        NAME_Z   = _SHOP_CH / 2 - _SHOP_CTH - 0.056
+        NAME_Z   = -_SHOP_CH / 2 + _SHOP_CIH * 0.66
+        BADGE_Z  = -_SHOP_CH / 2 + _SHOP_CIH * 0.22
 
         for idx, item in enumerate(page_items):
-            col = idx % _SHOP_COLS
-            row = idx // _SHOP_COLS
-            cx  = left_cx + col * (_SHOP_CW + _SHOP_GAPX)
-            cz  = GRID_TOP - _SHOP_CH / 2 - row * (_SHOP_CH + _SHOP_GAPY)
+            col     = idx % _SHOP_COLS
+            row     = idx // _SHOP_COLS
+            cx      = left_cx + col * (_SHOP_CW + _SHOP_GAPX)
+            cz      = GRID_TOP - _SHOP_CH / 2 - row * (_SHOP_CH + _SHOP_GAPY)
+            item_id = item.get("id")
+            name    = item.get("name", "")
+            creator = item.get("username", "")
+            owned   = item_id in owned_ids
 
             card = DirectButton(
-                frameColor=_CARD_BG,
-                frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CH/2, _SHOP_CH/2),
+                frameColor=_OWN_BG if owned else _CARD_BG,
+                frameSize=(-_SHOP_CW / 2, _SHOP_CW / 2, -_SHOP_CH / 2, _SHOP_CH / 2),
                 parent=cards_frame, pos=(cx, 0, cz),
                 sortOrder=5, relief=1,
                 command=self._show_shop_item_popup,
                 extraArgs=[item],
             )
-            tint_idx = item.get("id", idx) % len(_THUMB_TINTS)
             thumb_frame = DirectFrame(
-                frameColor=_THUMB_TINTS[tint_idx],
-                frameSize=(-_SHOP_CW/2, _SHOP_CW/2, -_SHOP_CTH/2, _SHOP_CTH/2),
+                frameColor=_THUMB_BG,
+                frameSize=(-_SHOP_CW / 2, _SHOP_CW / 2, -_SHOP_CTH / 2, _SHOP_CTH / 2),
                 parent=card, pos=(0, 0, THUMB_CY),
                 sortOrder=6,
             )
-            item_id = item.get("id")
             self._shop_thumb_frames[item_id] = thumb_frame
             rtt_tex = thumb_textures.get(item_id)
             if rtt_tex:
                 thumb_frame["frameTexture"] = rtt_tex
                 thumb_frame["frameColor"]   = (1, 1, 1, 1)
-            name = item.get("name", "")
+
+            short = (name[:10] + "…") if len(name) > 11 else name
             DirectLabel(
-                text=(name[:13] + "...") if len(name) > 14 else name,
-                text_fg=_NAME_COL, text_scale=0.022,
+                text=short, text_fg=_TEXT_H, text_scale=0.022,
                 frameColor=(0, 0, 0, 0),
-                parent=card, pos=(0, 0, NAME_Z),
-                sortOrder=6,
+                parent=card, pos=(0, 0, NAME_Z), sortOrder=6,
             )
+            if owned:
+                DirectLabel(
+                    text="Owned",
+                    text_fg=(0.08, 0.88, 0.32, 1), text_scale=0.015,
+                    frameColor=(0.12, 0.52, 0.24, 1.0),
+                    frameSize=(-0.036, 0.036, -0.011, 0.011),
+                    parent=card, pos=(-_SHOP_CW / 2 + 0.050, 0, BADGE_Z), sortOrder=6,
+                )
+            if creator:
+                short_c = (creator[:8] + "…") if len(creator) > 9 else creator
+                DirectLabel(
+                    text=f"by {short_c}", text_fg=_TEXT_D, text_scale=0.013,
+                    frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(_SHOP_CW / 2 - 0.040, 0, BADGE_Z),
+                    text_align=TextNode.ARight, sortOrder=6,
+                )
 
         # Update pagination controls
-        _ACTIVE = _RS_NAV
-        _DIM    = (0.40, 0.35, 0.55, 1.0)
+        _DIM = (0.40, 0.35, 0.52, 1.0)
         lbl  = getattr(self, "_shop_page_lbl",  None)
         prev = getattr(self, "_shop_prev_btn",  None)
         nxt  = getattr(self, "_shop_next_btn",  None)
         if lbl  and not lbl.isEmpty():  lbl["text"] = f"Page {page + 1} / {max_page + 1}"
-        if prev and not prev.isEmpty(): prev["frameColor"] = _ACTIVE if page > 0        else _DIM
-        if nxt  and not nxt.isEmpty():  nxt["frameColor"]  = _ACTIVE if page < max_page else _DIM
+        if prev and not prev.isEmpty(): prev["frameColor"] = _PANEL_DIV if page > 0        else _DIM
+        if nxt  and not nxt.isEmpty():  nxt["frameColor"]  = _PANEL_DIV if page < max_page else _DIM
 
     def _show_shop_item_popup(self, item_summary):
         existing = getattr(self, "_shop_item_popup", None)
@@ -2267,6 +2712,8 @@ class LoginScreenMixin:
             def _done(task, ok=(result is not None), err=err):
                 if ok:
                     self._shop_owned_ids.add(item_id)
+                    # Invalidate owned-items cache so avatar tab reflects new purchase
+                    self._avatar_items_full_cache = None
                     self._show_toast("Added to your items!", GREEN)
                     btn = getattr(self, "_shop_popup_get_btn", None)
                     if btn and not btn.isEmpty():
@@ -2764,7 +3211,7 @@ class LoginScreenMixin:
             if result:
                 print(f"[FACE_UPLOAD] OK id={result.get('id')}", flush=True)
                 self.taskMgr.doMethodLater(
-                    0, lambda t: (self._build_avatar_screen("items", "face"), t.done)[1],
+                    0, lambda t: (self._build_avatar_screen("face"), t.done)[1],
                     "_faceUploadRefresh", appendTask=True)
             else:
                 print(f"[FACE_UPLOAD] error: {err}", flush=True)
@@ -3100,46 +3547,78 @@ class LoginScreenMixin:
         # ── Nav bar ────────────────────────────────────────────────────────
         nav = DirectFrame(
             frameColor=_RS_NAV,
-            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            frameSize=(-2.5, 2.5, -0.076, 0.090),
             parent=bg, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
-            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lw = 0.075 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
-                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
-                              parent=nav, pos=(-1.55, 0, -0.008))
+                              frameSize=(-_lw/2, _lw/2, -0.038, 0.038),
+                              parent=nav, pos=(-1.55, 0, 0.005))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
+        _nav_icons = ["games.png", "avatar.png", "shirt.png", "buildd.png", "Settings.png"]
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",    self._build_browse_screen),
             ("Avatar",   self._build_avatar_screen),
-            ("Shop",     self._build_shop_screen),
-            ("Build",    self._build_main_menu),
+            ("Catalog",  self._build_shop_screen),
+            ("Workshop", self._build_main_menu),
             ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 4)
-            DirectButton(
-                text=tab_text,
-                text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.032,
+            _btn = DirectButton(
+                text="",
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.095, 0.095, -0.052, 0.052),
-                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.072, 0.075),
+                parent=nav, pos=((i - 2) * 0.24, 0, 0.005),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
+            _it = None
+            try:
+                _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), _nav_icons[i])))
+            except Exception:
+                pass
+            if _it:
+                _iw = 0.074 * (_it.getXSize() / max(_it.getYSize(), 1))
+                _if2 = DirectFrame(
+                    frameTexture=_it, frameColor=(1, 1, 1, 1),
+                    frameSize=(-_iw/2, _iw/2, -0.034, 0.034),
+                    parent=_btn, pos=(0, 0, 0.022),
+                )
+                _if2.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.029,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.051),
+            )
+        _nav_av_tex = self._get_nav_avatar_texture()
+        if _nav_av_tex:
+            _nav_av_f = DirectFrame(
+                frameTexture=_nav_av_tex, frameColor=(1, 1, 1, 1),
+                frameSize=(-0.065, 0.065, -0.065, 0.065),
+                parent=nav, pos=(1.15, 0, 0.005),
+            )
+            _nav_av_f.setTransparency(TransparencyAttrib.MAlpha)
+            if not hasattr(self, '_nav_avatar_frames'):
+                self._nav_avatar_frames = []
+            self._nav_avatar_frames.append(_nav_av_f)
         DirectLabel(
             text=self._session_username or "",
-            text_fg=_RS_GRAY, text_scale=0.028,
+            text_fg=_RS_GRAY, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.20, 0, -0.014),
+            parent=nav, pos=(1.07, 0, -0.008),
+            text_align=TextNode.ARight,
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=(0.48, 0.38, 0.66, 1.0),
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.55, 0, -0.014),
+            parent=nav, pos=(1.55, 0, 0.005),
             relief=1, command=self._do_logout,
         )
 
@@ -3370,47 +3849,79 @@ class LoginScreenMixin:
         # ── Top nav bar ────────────────────────────────────────────────────
         nav = DirectFrame(
             frameColor=_RS_NAV,
-            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            frameSize=(-2.5, 2.5, -0.076, 0.090),
             parent=bg, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PiePlex logo.png')))
         if _lt:
-            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lw = 0.075 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
-                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
-                              parent=nav, pos=(-1.55, 0, -0.008))
+                              frameSize=(-_lw/2, _lw/2, -0.038, 0.038),
+                              parent=nav, pos=(-1.55, 0, 0.005))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
         # Tabs centred around x=0
+        _nav_icons = ["games.png", "avatar.png", "shirt.png", "buildd.png", "Settings.png"]
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",    self._build_browse_screen),
             ("Avatar",   self._build_avatar_screen),
-            ("Shop",     self._build_shop_screen),
-            ("Build",    self._build_main_menu),
+            ("Catalog",  self._build_shop_screen),
+            ("Workshop", self._build_main_menu),
             ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 0)
-            DirectButton(
-                text=tab_text,
-                text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.032,
+            _btn = DirectButton(
+                text="",
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.095, 0.095, -0.052, 0.052),
-                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.072, 0.075),
+                parent=nav, pos=((i - 2) * 0.24, 0, 0.005),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
+            _it = None
+            try:
+                _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), _nav_icons[i])))
+            except Exception:
+                pass
+            if _it:
+                _iw = 0.074 * (_it.getXSize() / max(_it.getYSize(), 1))
+                _if2 = DirectFrame(
+                    frameTexture=_it, frameColor=(1, 1, 1, 1),
+                    frameSize=(-_iw/2, _iw/2, -0.034, 0.034),
+                    parent=_btn, pos=(0, 0, 0.022),
+                )
+                _if2.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.029,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.051),
+            )
+        _nav_av_tex = self._get_nav_avatar_texture()
+        if _nav_av_tex:
+            _nav_av_f = DirectFrame(
+                frameTexture=_nav_av_tex, frameColor=(1, 1, 1, 1),
+                frameSize=(-0.065, 0.065, -0.065, 0.065),
+                parent=nav, pos=(1.15, 0, 0.005),
+            )
+            _nav_av_f.setTransparency(TransparencyAttrib.MAlpha)
+            if not hasattr(self, '_nav_avatar_frames'):
+                self._nav_avatar_frames = []
+            self._nav_avatar_frames.append(_nav_av_f)
         DirectLabel(
             text=self._session_username or "",
-            text_fg=_RS_GRAY, text_scale=0.028,
+            text_fg=_RS_GRAY, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.20, 0, -0.014),
+            parent=nav, pos=(1.07, 0, -0.008),
+            text_align=TextNode.ARight,
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.55, 0, -0.014),
+            parent=nav, pos=(1.55, 0, 0.005),
             relief=1, command=self._do_logout,
         )
 
@@ -4214,7 +4725,7 @@ class LoginScreenMixin:
             btn = getattr(self, attr, None)
             if btn:
                 btn.show()
-        if getattr(self, '_session_token', None):
+        if getattr(self, '_session_username', None) == "bob":
             btn = getattr(self, 'hat_config_button', None)
             if btn:
                 btn.show()
@@ -4240,6 +4751,7 @@ class LoginScreenMixin:
         if hasattr(self, 'remove_pants'):
             self.remove_pants()
         self._delete_saved_token()
+        self._nav_av_cleanup()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
             self._main_menu_ui = None
