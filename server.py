@@ -23,6 +23,7 @@ GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/dow
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
 _SERVER_API_VERSION = 8
+_TEST_VAR = 1
 
 # build_id -> {player_id -> {ws, username, x, y, z, h}}
 _rooms: dict = {}
