@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 from direct.gui.DirectGui import DirectFrame, DirectButton, DirectLabel
 from direct.task import Task
@@ -106,10 +107,11 @@ class AvatarMixin:
             if exists:
                 node.setColor(*colors[part])
             print(f"[SETCOLOR_LOCAL] part={part} rgba={colors[part]} node_exists={exists}", flush=True)
+        self._nav_av_update_colors()
 
     # ── Avatar screen ──────────────────────────────────────────────────────
 
-    def _build_avatar_screen(self, subtab="items", items_filter="tshirt"):
+    def _build_avatar_screen(self, items_filter="tshirt"):
         self._cleanup_avatar_items_tab()
         if self._main_menu_ui:
             self._main_menu_ui.destroy()
@@ -140,76 +142,97 @@ class AvatarMixin:
         # ── Top nav bar (Avatar tab active) ───────────────────────────────
         nav = DirectFrame(
             frameColor=_RS_NAV,
-            frameSize=(-2.5, 2.5, -0.068, 0.068),
+            frameSize=(-2.5, 2.5, -0.076, 0.090),
             parent=bg, pos=(0, 0, 0.908),
         )
-        _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(os.getcwd(), 'PiePlex logo.png')))
+        _base_dir = os.path.dirname(os.path.abspath(__file__))
+        _lt = None
+        try:
+            _lt = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(_base_dir, 'PiePlex logo.png')))
+        except Exception:
+            pass
         if _lt:
-            _lw = 0.090 * (_lt.getXSize() / max(_lt.getYSize(), 1))
+            _lw = 0.075 * (_lt.getXSize() / max(_lt.getYSize(), 1))
             _lf = DirectFrame(frameTexture=_lt, frameColor=(1,1,1,1),
-                              frameSize=(-_lw/2, _lw/2, -0.045, 0.045),
-                              parent=nav, pos=(-1.55, 0, -0.008))
+                              frameSize=(-_lw/2, _lw/2, -0.038, 0.038),
+                              parent=nav, pos=(-1.55, 0, 0.005))
             _lf.setTransparency(TransparencyAttrib.MAlpha)
+        _nav_icons = ["games.png", "avatar.png", "shirt.png", "buildd.png", "Settings.png"]
         for i, (tab_text, tab_cmd) in enumerate([
             ("Games",    self._build_browse_screen),
             ("Avatar",   self._build_avatar_screen),
-            ("Shop",     self._build_shop_screen),
-            ("Build",    self._build_main_menu),
+            ("Catalog",  self._build_shop_screen),
+            ("Workshop", self._build_main_menu),
             ("Settings", self._build_settings_screen),
         ]):
             is_active = (i == 1)
-            DirectButton(
-                text=tab_text,
-                text_fg=_RS_WHITE if is_active else _RS_GRAY,
-                text_scale=0.032,
+            _btn = DirectButton(
+                text="",
                 frameColor=_RS_ORANGE if is_active else (0, 0, 0, 0),
-                frameSize=(-0.095, 0.095, -0.052, 0.052),
-                parent=nav, pos=((i - 2) * 0.24, 0, -0.008),
+                frameSize=(-0.095, 0.095, -0.072, 0.075),
+                parent=nav, pos=((i - 2) * 0.24, 0, 0.005),
                 relief=1 if is_active else 0,
                 command=tab_cmd,
             )
+            _it = None
+            try:
+                _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                    os.path.join(_base_dir, _nav_icons[i])))
+            except Exception:
+                pass
+            if _it:
+                _iw = 0.074 * (_it.getXSize() / max(_it.getYSize(), 1))
+                _if2 = DirectFrame(
+                    frameTexture=_it, frameColor=(1, 1, 1, 1),
+                    frameSize=(-_iw/2, _iw/2, -0.034, 0.034),
+                    parent=_btn, pos=(0, 0, 0.022),
+                )
+                _if2.setTransparency(TransparencyAttrib.MAlpha)
+            DirectLabel(
+                text=tab_text,
+                text_fg=_RS_WHITE if is_active else _RS_GRAY,
+                text_scale=0.029,
+                frameColor=(0, 0, 0, 0),
+                parent=_btn, pos=(0, 0, -0.051),
+            )
+        _nav_av_tex = self._get_nav_avatar_texture()
+        if _nav_av_tex:
+            _nav_av_f = DirectFrame(
+                frameTexture=_nav_av_tex, frameColor=(1, 1, 1, 1),
+                frameSize=(-0.065, 0.065, -0.065, 0.065),
+                parent=nav, pos=(1.15, 0, 0.005),
+            )
+            _nav_av_f.setTransparency(TransparencyAttrib.MAlpha)
+            if not hasattr(self, '_nav_avatar_frames'):
+                self._nav_avatar_frames = []
+            self._nav_avatar_frames.append(_nav_av_f)
         DirectLabel(
             text=getattr(self, "_session_username", "") or "",
-            text_fg=_RS_GRAY, text_scale=0.028,
+            text_fg=_RS_GRAY, text_scale=0.040,
             frameColor=(0, 0, 0, 0),
-            parent=nav, pos=(1.20, 0, -0.014),
+            parent=nav, pos=(1.07, 0, 0.005),
+            text_align=TextNode.ARight,
         )
         DirectButton(
             text="Log Out",
             text_fg=_RS_WHITE, text_scale=0.026,
             frameColor=_RS_BORDER,
             frameSize=(-0.082, 0.082, -0.026, 0.026),
-            parent=nav, pos=(1.55, 0, -0.014),
+            parent=nav, pos=(1.55, 0, 0.005),
             relief=1, command=self._do_logout,
         )
 
-        # ── Sub-nav: Colors / Items ────────────────────────────────────────
-        DirectFrame(
-            frameColor=_RS_SUBNAV,
-            frameSize=(-3, 3, -0.040, 0.040),
-            parent=bg, pos=(0, 0, 0.760),
-        )
-        for i, (label, tab) in enumerate([("Items", "items"), ("Colors", "colors")]):
-            is_active = (tab == subtab)
-            DirectButton(
-                text=label,
-                text_fg=_RS_WHITE,
-                text_scale=0.028,
-                frameColor=_RS_ORANGE if is_active else (0.48, 0.38, 0.66, 1.0),
-                frameSize=(-0.095, 0.095, -0.028, 0.028),
-                parent=bg,
-                pos=(-0.12 + i * 0.24, 0, 0.756),
-                relief=1,
-                command=self._build_avatar_screen,
-                extraArgs=[tab],
-            )
-
         # ── Content area ──────────────────────────────────────────────────
-        if subtab == "colors":
-            self._build_avatar_char(bg, x_off=-0.28, z_off=-0.08)
-            self._build_avatar_palette(bg, left=0.16, top=0.20, sw=0.082, sh=0.078, pad=0.007)
-        else:
-            self._build_avatar_items_content(bg, items_filter=items_filter)
+        self._build_avatar_items_content(bg, items_filter=items_filter)
+        _sbar_cache = {}
+        for _sif in ["hat.png", "face.png", "shirt.png", "pantss.png", "t shirt.png", "colors.png"]:
+            try:
+                _st = self.loader.loadTexture(Filename.fromOsSpecific(os.path.join(_base_dir, _sif)))
+                if _st:
+                    _sbar_cache[_sif] = _st
+            except Exception:
+                pass
+        self._build_avatar_sidebar(bg, items_filter, _sbar_cache)
 
     # ── Colors tab content (2D clickable char + palette) ──────────────────
 
@@ -255,10 +278,12 @@ class AvatarMixin:
     def _avatar_pick(self, color):
         part = self._avatar_selected
         self._avatar_colors[part] = color
-        btn = self._avatar_btns[part]
-        btn["frameColor"] = color
+        btn = (self._avatar_btns or {}).get(part)
+        if btn and not btn.isEmpty():
+            btn["frameColor"] = color
         self.save_avatar_colors(self._avatar_colors)
         self.apply_avatar_colors()
+        self._nav_avatar_tex = 'UNSET'  # invalidate cached topbar thumbnail
         token = getattr(self, "_session_token", None)
         if token:
             import threading, auth_client
@@ -268,83 +293,221 @@ class AvatarMixin:
                 daemon=True,
             ).start()
 
+    # ── Sidebar + category switching ───────────────────────────────────────
+
+    def _build_avatar_sidebar(self, parent, current_filter="tshirt", icon_cache=None):
+        from panda3d.core import CardMaker
+        _PANEL_BG  = (0.62, 0.58, 0.78, 1.0)
+        _SEL_COL   = (0.44, 0.32, 0.64, 1.0)
+        _NORM_COL  = (0.55, 0.46, 0.72, 1.0)
+        _TEXT_H    = (0.12, 0.08, 0.28, 1.0)
+        _base_dir  = os.path.dirname(os.path.abspath(__file__))
+        _CATS = [
+            ("Hats",     "hat",     "hat.png"),
+            ("Faces",    "face",    "face.png"),
+            ("Shirts",   "shirt",   "shirt.png"),
+            ("Pants",    "pants",   "pantss.png"),
+            ("T-Shirts", "tshirt",  "t shirt.png"),
+            ("Colors",   "colors",  "colors.png"),
+        ]
+        _BTN_H = 0.21
+        _GAP   = 0.017
+        _n     = len(_CATS)
+        _total = _n * _BTN_H + (_n - 1) * _GAP
+        _start_z = (-0.82 + 0.68) / 2 + _total / 2 - _BTN_H / 2
+        sidebar = DirectFrame(
+            frameColor=_PANEL_BG,
+            frameSize=(-0.16, 0.16, -0.82, 0.68),
+            parent=parent, pos=(1.14, 0, -0.08),
+        )
+        self._avatar_sidebar_frame = sidebar
+        self._avatar_sidebar_buttons = {}
+        for i, (label, cat, icon_file) in enumerate(_CATS):
+            is_sel = (cat == current_filter)
+            bz = _start_z - i * (_BTN_H + _GAP)
+            btn = DirectButton(
+                text="",
+                frameColor=_SEL_COL if is_sel else _NORM_COL,
+                frameSize=(-0.14, 0.14, -_BTN_H/2, _BTN_H/2),
+                parent=sidebar, pos=(0, 0, bz),
+                relief=1,
+                command=self._switch_avatar_category,
+                extraArgs=[cat],
+            )
+            self._avatar_sidebar_buttons[cat] = btn
+            has_icon = False
+            if icon_file:
+                _it = (icon_cache or {}).get(icon_file)
+                if not _it:
+                    try:
+                        _it = self.loader.loadTexture(Filename.fromOsSpecific(
+                            os.path.join(_base_dir, icon_file)))
+                    except Exception:
+                        _it = None
+                if _it:
+                    _cm = CardMaker('sb_icon')
+                    _cm.setFrame(-0.046, 0.046, -0.046, 0.046)
+                    _np = btn.attachNewNode(_cm.generate())
+                    _np.setTexture(_it, 1)
+                    _np.setTransparency(TransparencyAttrib.MAlpha)
+                    _np.setPos(0, 0, 0.040)
+                    _np.setLightOff()
+                    _np.setShaderOff()
+                    _np.setBin('gui-popup', 5)
+                    _np.setDepthWrite(False)
+                    has_icon = True
+            DirectLabel(
+                text=label, text_fg=_TEXT_H, text_scale=0.021,
+                frameColor=(0, 0, 0, 0),
+                parent=btn, pos=(0, 0, -0.072 if has_icon else 0.0),
+            )
+
+    def _switch_avatar_category(self, cat):
+        _SEL_COL  = (0.44, 0.32, 0.64, 1.0)
+        _NORM_COL = (0.55, 0.46, 0.72, 1.0)
+        for k, btn in (getattr(self, '_avatar_sidebar_buttons', None) or {}).items():
+            if btn and not btn.isEmpty():
+                btn['frameColor'] = _SEL_COL if k == cat else _NORM_COL
+        parent = getattr(self, "_avatar_screen_parent", None)
+        if cat == "colors":
+            # Invalidate prebuilt rig so colors changes are reflected on return
+            self._avatar_rig_prebuilt = False
+            # Tear down 3D preview and items panel
+            self._cleanup_avatar_items_tab()
+            old_bg = getattr(self, "_avatar_items_bg", None)
+            if old_bg and not old_bg.isEmpty():
+                old_bg.destroy()
+            self._avatar_items_bg = None
+            # Destroy old colors view if any (colors→colors shouldn't happen but guard)
+            old_col = getattr(self, "_avatar_colors_bg", None)
+            if old_col and not old_col.isEmpty():
+                old_col.destroy()
+            self._avatar_colors_bg = None
+            if parent and not parent.isEmpty():
+                self._build_avatar_colors_content(parent)
+        else:
+            # Destroy colors view
+            old_col = getattr(self, "_avatar_colors_bg", None)
+            if old_col and not old_col.isEmpty():
+                old_col.destroy()
+            self._avatar_colors_bg = None
+            self._avatar_btns = {}
+            self._avatar_items_filter = cat
+            if parent and not parent.isEmpty():
+                if getattr(self, '_avatar_preview_card', None) is None:
+                    # preview card destroyed (came from colors or first open), rebuild
+                    self._build_avatar_items_content(parent, cat)
+                else:
+                    # preview card already shown, just swap the items panel
+                    self._build_avatar_items_panel(parent, cat)
+
+    def _build_avatar_colors_content(self, parent):
+        # Transparent full-screen container so destroying it removes all char+palette buttons
+        colors_bg = DirectFrame(
+            frameColor=(0, 0, 0, 0),
+            frameSize=(-3, 3, -3, 3),
+            parent=parent,
+        )
+        self._avatar_colors_bg = colors_bg
+        self._avatar_btns = {}
+        # Original 2D flat char + palette at original screen positions
+        self._build_avatar_char(colors_bg, x_off=-0.28, z_off=-0.08)
+        self._build_avatar_palette(colors_bg, left=0.16, top=0.20, sw=0.082, sh=0.078, pad=0.007)
+
     # ── Items tab content (3D preview + empty list) ────────────────────────
 
-    def _build_avatar_items_content(self, parent, items_filter="tshirt"):
-        self._avatar_items_filter = items_filter
-        CARD_W = 0.50
-        CARD_H = 0.60
-        CARD_X = -0.75
-        CARD_Z = -0.10
-        PMASK  = BitMask32.bit(5)
-
-        # ── Preview root anchored in render (cull traverser finds it) ─────
+    def _ensure_avatar_preview_rig(self):
+        """Build the offscreen preview rig if not already live. Safe to call multiple times."""
+        if getattr(self, '_avatar_rig_prebuilt', False):
+            root = getattr(self, '_avatar_preview_root', None)
+            if root and not root.isEmpty():
+                return
+            self._avatar_rig_prebuilt = False  # stale reference, rebuild
+        PMASK = BitMask32.bit(5)
         preview_root = self.render.attachNewNode("avatar_preview_root")
         preview_root.setPos(0, 2000, 0)
         self._avatar_preview_root = preview_root
-
-        # ── Fresh preview rig — NO copyTo, zero inherited state ────────────
         colors = getattr(self, "_avatar_colors", {}) or {}
         self._build_preview_rig(preview_root, colors, PMASK)
-
-        # ── Lighting ───────────────────────────────────────────────────────
-        # Soft ambient so no face goes fully black
         alight = AmbientLight("preview_ambient")
         alight.setColor(LColor(0.22, 0.22, 0.25, 1))
         preview_root.setLight(preview_root.attachNewNode(alight))
-
-        # Key light from the camera-side (H=0 shines in +Y = toward character front)
         dlight = DirectionalLight("preview_key")
         dlight.setColor(LColor(0.50, 0.50, 0.52, 1))
         dlnp = preview_root.attachNewNode(dlight)
         dlnp.setHpr(20, 15, 0)
         preview_root.setLight(dlnp)
-
-        # Rim light from above-back to give depth
         fill = DirectionalLight("preview_fill")
         fill.setColor(LColor(0.16, 0.16, 0.18, 1))
         flnp = preview_root.attachNewNode(fill)
         flnp.setHpr(200, -50, 0)
         preview_root.setLight(flnp)
-
-        # ── Camera pivot (at character mid-height) ─────────────────────────
         pivot = preview_root.attachNewNode("avatar_preview_pivot")
         pivot.setPos(0, 0, 2)
         self._avatar_cam_pivot = pivot
-
-        # ── Buffer ─────────────────────────────────────────────────────────
-        # Buffer aspect must match card display aspect (CARD_W*2 / CARD_H*2 = 0.833)
-        # so no stretch occurs when frameTexture fills the card.
         buf = self.win.makeTextureBuffer("avatar_preview", 400, 480)
         buf.setClearColor(LColor(0.78, 0.75, 0.88, 1.0))
         buf.setClearColorActive(True)
         self._avatar_buf = buf
-
-        # ── Camera — built manually so no inherited transform from self.camera ──
-        # makeCamera() attaches to self.camera which carries the main camera's
-        # rotation; reparentTo() preserves local HPR causing a tilted view.
-        # 400×480 → aspect 0.833 → hFOV 32°, vFOV = 2*atan(tan(16°)/0.833) ≈ 38°
         _camNode = Camera("avatar_preview_cam")
         _lens = PerspectiveLens()
-        _lens.setFov(32, 38)
+        _lens.setFov(32, 46)
         _lens.setNearFar(0.1, 1000)
         _camNode.setLens(_lens)
         _camNode.setCameraMask(PMASK)
         cam_np = pivot.attachNewNode(_camNode)
-        cam_np.setPos(0, -8, 0)
+        cam_np.setPos(0, -9.5, 0)
         cam_np.lookAt(preview_root, Point3(0, 0, 3))
         _dr = buf.makeDisplayRegion()
         _dr.setSort(10)
         _dr.setCamera(cam_np)
         self._avatar_cam_np = cam_np
-
-        # ── Exclude PMASK from main camera ─────────────────────────────────
         orig_mask = self.camNode.getCameraMask()
         self._avatar_saved_cam_mask = orig_mask
         self.camNode.setCameraMask(orig_mask & ~PMASK)
+        self._avatar_rig_prebuilt = True
+
+    def _avatar_start_prefetch(self):
+        """Kick off background fetch (owned items + catalog) and schedule rig pre-build after login."""
+        token = getattr(self, '_session_token', None)
+        if not token:
+            return
+        import threading as _thr, auth_client as _ac
+        def _fetch():
+            try:
+                result, _ = _ac.get_owned_items(token)
+                self._avatar_items_full_cache = (result or {}).get("items", [])
+            except Exception:
+                pass
+            try:
+                result, _ = _ac.list_shop_items()
+                self._shop_items_full_cache = (result or {}).get("items", [])
+            except Exception:
+                pass
+        _thr.Thread(target=_fetch, daemon=True).start()
+        self.taskMgr.doMethodLater(0.5, self._avatar_prebuild_rig_task, '_avatarPrebuildRig')
+
+    def _avatar_prebuild_rig_task(self, task):
+        try:
+            if not getattr(self, '_avatar_colors', None):
+                self._avatar_colors = self.load_avatar_colors()
+            self._ensure_avatar_preview_rig()
+        except Exception as e:
+            print(f"[AVATAR_PREBUILD] {e}", flush=True)
+        return task.done
+
+    def _build_avatar_items_content(self, parent, items_filter="tshirt"):
+        self._avatar_items_filter = items_filter
+        self._avatar_screen_parent = parent
+        CARD_W = 0.50
+        CARD_H = 0.60
+        CARD_X = -0.75
+        CARD_Z = -0.10
+
+        self._ensure_avatar_preview_rig()
 
         # ── Texture card ───────────────────────────────────────────────────
-        tex = buf.getTexture()
+        tex = self._avatar_buf.getTexture()
         preview_card = DirectFrame(
             frameTexture=tex,
             frameColor=(1, 1, 1, 1),
@@ -352,18 +515,16 @@ class AvatarMixin:
             parent=parent, pos=(CARD_X, 0, CARD_Z),
         )
         preview_card.setTransparency(False)
+        self._avatar_preview_card = preview_card
 
-        DirectLabel(
+        drag_lbl = DirectLabel(
             text="Drag to rotate",
             text_fg=(0.40, 0.35, 0.55, 1), text_scale=0.022,
             frameColor=(0, 0, 0, 0),
             parent=parent,
             pos=(CARD_X, 0, CARD_Z - CARD_H - 0.038),
         )
-
-        # Apply calibrated camera values
-        cam_np.setPos(0, -9.5, 0)
-        _lens.setFov(32, 46)
+        self._avatar_drag_lbl = drag_lbl
 
         # ── Drag-to-rotate task ────────────────────────────────────────────
         self._avatar_drag_active = False
@@ -415,7 +576,15 @@ class AvatarMixin:
 
         self.taskMgr.add(_drag_task, "_avatarItemsDrag")
 
-        # ── Items list panel (purple theme) ────────────────────────────────
+        self._build_avatar_items_panel(parent, items_filter)
+
+    def _build_avatar_items_panel(self, parent, items_filter="tshirt"):
+        # Destroy any previous items panel before rebuilding
+        old_bg = getattr(self, "_avatar_items_bg", None)
+        if old_bg and not old_bg.isEmpty():
+            old_bg.destroy()
+        self._avatar_items_bg = None
+
         _PANEL_BG  = (0.68, 0.65, 0.82, 1.0)
         _PANEL_DIV = (0.50, 0.40, 0.68, 1.0)
         _TEXT_H    = (0.12, 0.08, 0.28, 1.0)
@@ -424,41 +593,13 @@ class AvatarMixin:
 
         items_bg = DirectFrame(
             frameColor=_PANEL_BG,
-            frameSize=(-0.72, 0.72, -0.82, 0.68),
-            parent=parent, pos=(0.55, 0, -0.08),
+            frameSize=(-0.57, 0.57, -0.82, 0.68),
+            parent=parent, pos=(0.38, 0, -0.08),
         )
-        DirectLabel(
-            text="Items", text_fg=_TEXT_H, text_scale=0.036,
-            frameColor=(0, 0, 0, 0),
-            parent=items_bg, pos=(0, 0, 0.56),
-        )
-        DirectFrame(
-            frameColor=_PANEL_DIV,
-            frameSize=(-0.64, 0.64, -0.002, 0.002),
-            parent=items_bg, pos=(0, 0, 0.44),
-        )
-        # ── T-Shirts / Shirts / Pants / Hats / Face filter tabs ────────────
-        _TAB_ON  = (0.44, 0.32, 0.64, 1.0)
-        _TAB_OFF = (0.58, 0.48, 0.76, 1.0)
-        tabs = [("T-Shirts","tshirt"),("Shirts","shirt"),("Pants","pants"),
-                ("Hats","hat"),("Face","face")]
-        for ti, (tab_label, tab_val) in enumerate(tabs):
-            is_on = (tab_val == items_filter)
-            DirectButton(
-                text=tab_label,
-                text_fg=_TEXT_H, text_scale=0.018,
-                frameColor=_TAB_ON if is_on else _TAB_OFF,
-                frameSize=(-0.082, 0.082, -0.026, 0.026),
-                parent=items_bg,
-                pos=(-0.328 + ti * 0.164, 0, 0.385),
-                relief=1,
-                command=self._build_avatar_screen,
-                extraArgs=["items", tab_val],
-            )
         self._avatar_items_loading_lbl = DirectLabel(
             text="Loading...", text_fg=_TEXT_M, text_scale=0.030,
             frameColor=(0, 0, 0, 0),
-            parent=items_bg, pos=(0, 0, 0.15),
+            parent=items_bg, pos=(0, 0, 0.46),
         )
         self._avatar_items_bg = items_bg
         self._avatar_items_panel_colors = (_TEXT_H, _TEXT_M, _TEXT_D, _PANEL_BG, _PANEL_DIV)
@@ -474,9 +615,13 @@ class AvatarMixin:
             def _fetch(eid_t=equipped_tshirt_id, eid_h=equipped_hat_id,
                        eid_s=equipped_shirt_id, eid_p=equipped_pants_id, flt=cur_filter):
                 import base64 as _b64
-                result, _ = _ac.get_owned_items(token)
-                all_owned = (result or {}).get("items", [])
-                # Filter visible items by tab
+                cache = getattr(self, '_avatar_items_full_cache', None)
+                if cache is not None:
+                    all_owned = cache
+                else:
+                    result, _ = _ac.get_owned_items(token)
+                    all_owned = (result or {}).get("items", [])
+                    self._avatar_items_full_cache = all_owned
                 if flt == "hat":
                     owned_items = [it for it in all_owned if "|HATDATA|" in (it.get("image_data") or "")]
                 elif flt == "shirt":
@@ -492,7 +637,6 @@ class AvatarMixin:
                                    and "|PANTSDATA|" not in (it.get("image_data") or "")
                                    and "|FACEDATA|"  not in (it.get("image_data") or "")]
 
-                # Restore T-shirt preview (search all_owned regardless of tab)
                 preview_b64 = None
                 if eid_t:
                     for it in all_owned:
@@ -506,8 +650,6 @@ class AvatarMixin:
                             img = full.get("image_data") or ""
                             preview_b64 = img if "|HATDATA|" not in img else None
 
-                # Restore hat preview — always, regardless of which tab is active.
-                # hat_data is embedded in image_data via |HATDATA| marker.
                 preview_hat_data = None
                 if eid_h:
                     for it in all_owned:
@@ -531,7 +673,6 @@ class AvatarMixin:
                                 except Exception:
                                     pass
 
-                # Restore shirt preview
                 preview_shirt_b64 = None
                 if eid_s:
                     for it in all_owned:
@@ -546,7 +687,6 @@ class AvatarMixin:
                             if "|SHIRTDATA|" in img:
                                 preview_shirt_b64 = img.split("|SHIRTDATA|")[0]
 
-                # Restore pants preview
                 preview_pants_b64 = getattr(self, "_equipped_pants_b64", None)
                 if not preview_pants_b64 and eid_p:
                     for it in all_owned:
@@ -580,6 +720,9 @@ class AvatarMixin:
             if lbl and not lbl.isEmpty():
                 lbl["text"] = "Not logged in."
 
+    def _switch_avatar_items_filter(self, new_filter):
+        self._switch_avatar_category(new_filter)
+
     def _populate_avatar_items(self, items):
         lbl = getattr(self, "_avatar_items_loading_lbl", None)
         if lbl and not lbl.isEmpty():
@@ -604,104 +747,44 @@ class AvatarMixin:
             )
             return
 
-        # Pre-render thumbnails. T-shirts get RTT avatar render; hats use image_data directly.
+        # Pre-render thumbnails for the first page only; other pages load lazily on navigation.
         self._avatar_all_items = items
         self._avatar_items_page = 0
         cur_filter = getattr(self, '_avatar_items_filter', 'tshirt')
-        thumb_textures = {}
-        import base64 as _b64
-        from panda3d.core import PNMImage, StringStream, Texture
-        if cur_filter == "tshirt":
-            tshirt_items = [it for it in items if it.get("image_data")]
-            try:
-                thumb_textures = self._render_shop_thumbnails(tshirt_items, buf_w=256, buf_h=256)
-            except Exception:
-                thumb_textures = {}
-        elif cur_filter == "shirt":
-            shirt_items = [it for it in items if it.get("image_data")]
-            try:
-                thumb_textures = self._render_shop_thumbnails(shirt_items, buf_w=256, buf_h=256)
-            except Exception:
-                thumb_textures = {}
-        elif cur_filter == "pants":
-            pants_items = [it for it in items if it.get("image_data")]
-            try:
-                thumb_textures = self._render_shop_thumbnails(pants_items, buf_w=256, buf_h=256)
-            except Exception:
-                thumb_textures = {}
-        elif cur_filter == "face":
-            # Face: thumbnail is the first frame (before |FACEDATA|), composited on white
-            for it in items:
-                iid  = it.get("id")
-                idat = it.get("image_data") or ""
-                if "|FACEDATA|" in idat:
-                    idat = idat.split("|FACEDATA|")[0]
-                if iid and idat:
-                    try:
-                        raw  = _b64.b64decode(idat)
-                        face = PNMImage()
-                        if face.read(StringStream(raw), "face.png"):
-                            w, h = face.getXSize(), face.getYSize()
-                            bg = PNMImage(w, h)
-                            bg.fill(1, 1, 1)
-                            bg.alphaFill(1)
-                            if face.hasAlpha():
-                                bg.blendSubImage(face, 0, 0)
-                            else:
-                                bg.copySubImage(face, 0, 0)
-                            tex = Texture()
-                            tex.load(bg)
-                            tex.setMagfilter(Texture.FTLinear)
-                            tex.setMinfilter(Texture.FTLinear)
-                            thumb_textures[iid] = tex
-                    except Exception:
-                        pass
-        else:
-            # Hats: strip the |HATDATA| payload, keep only the thumbnail prefix
-            for it in items:
-                iid  = it.get("id")
-                idat = it.get("image_data") or ""
-                if "|HATDATA|" in idat:
-                    idat = idat.split("|HATDATA|")[0]
-                if iid and idat:
-                    try:
-                        raw = _b64.b64decode(idat)
-                        ss  = StringStream(raw)
-                        pnm = PNMImage()
-                        if pnm.read(ss):
-                            tex = Texture()
-                            tex.load(pnm)
-                            tex.setMagfilter(Texture.FTLinear)
-                            tex.setMinfilter(Texture.FTLinear)
-                            thumb_textures[iid] = tex
-                    except Exception:
-                        pass
+        PAGE_SIZE = 6
+        thumb_textures = self._make_thumb_textures(items[:PAGE_SIZE], cur_filter)
         self._avatar_thumb_textures = thumb_textures
 
         # Grid sub-frame (replaced on each page turn)
         self._avatar_items_grid_frame = DirectFrame(
             frameColor=(0, 0, 0, 0),
-            frameSize=(-0.70, 0.70, -0.55, 0.38),
+            frameSize=(-0.56, 0.56, -0.64, 0.62),
             parent=items_bg,
         )
 
-        # Prev / Next buttons
+        # Pagination: < | Page X/Y | >
         self._avatar_items_prev_btn = DirectButton(
-            text="< Prev",
-            text_fg=_TEXT_H, text_scale=0.026,
+            text="<",
+            text_fg=_TEXT_H, text_scale=0.038,
             frameColor=_PANEL_DIV,
-            frameSize=(-0.12, 0.12, -0.030, 0.030),
-            parent=items_bg, pos=(-0.22, 0, -0.72),
+            frameSize=(-0.090, 0.090, -0.038, 0.038),
+            parent=items_bg, pos=(-0.30, 0, -0.72),
             relief=1,
             command=self._avatar_items_goto_page,
             extraArgs=[-1],
         )
+        self._avatar_items_page_lbl = DirectLabel(
+            text="Page 1/1",
+            text_fg=_TEXT_H, text_scale=0.030,
+            frameColor=(0, 0, 0, 0),
+            parent=items_bg, pos=(0, 0, -0.72),
+        )
         self._avatar_items_next_btn = DirectButton(
-            text="Next >",
-            text_fg=_TEXT_H, text_scale=0.026,
+            text=">",
+            text_fg=_TEXT_H, text_scale=0.038,
             frameColor=_PANEL_DIV,
-            frameSize=(-0.12, 0.12, -0.030, 0.030),
-            parent=items_bg, pos=(0.22, 0, -0.72),
+            frameSize=(-0.090, 0.090, -0.038, 0.038),
+            parent=items_bg, pos=(0.30, 0, -0.72),
             relief=1,
             command=self._avatar_items_goto_page,
             extraArgs=[+1],
@@ -727,12 +810,21 @@ class AvatarMixin:
             gf.destroy()
         grid_frame = DirectFrame(
             frameColor=(0, 0, 0, 0),
-            frameSize=(-0.70, 0.70, -0.55, 0.38),
+            frameSize=(-0.56, 0.56, -0.64, 0.62),
             parent=items_bg,
         )
         self._avatar_items_grid_frame = grid_frame
 
         cur_filter  = getattr(self, '_avatar_items_filter', 'tshirt')
+
+        # Lazy-generate thumbnails for any items on this page that aren't cached yet
+        page_items = all_items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+        missing = [it for it in page_items if it.get("id") not in thumb_textures]
+        if missing:
+            new_tex = self._make_thumb_textures(missing, cur_filter)
+            thumb_textures.update(new_tex)
+            self._avatar_thumb_textures = thumb_textures
+
         if cur_filter == "hat":
             equipped_id = getattr(self, "_equipped_hat_id", None)
         elif cur_filter == "shirt":
@@ -743,10 +835,10 @@ class AvatarMixin:
             equipped_id = getattr(self, "_equipped_face_id", None)
         else:
             equipped_id = getattr(self, "_equipped_tshirt_id", None)
-        COLS = 3; CARD_W = 0.42; CARD_H = 0.42; NAME_H = 0.06
-        GAP_X = 0.03; GAP_Y = 0.04; TOTAL_H = CARD_H + NAME_H
+        COLS = 3; CARD_W = 0.335; CARD_H = 0.335; NAME_H = 0.115
+        GAP_X = 0.022; GAP_Y = 0.028; TOTAL_H = CARD_H + NAME_H
         start_x = -(COLS * CARD_W + (COLS - 1) * GAP_X) / 2 + CARD_W / 2
-        start_z = 0.10
+        start_z = 0.40
         _EQ_COL   = (0.38, 0.26, 0.58, 1.0)
         _NORM_COL = (0.52, 0.44, 0.70, 1.0)
         self._avatar_item_btns = {}
@@ -758,6 +850,7 @@ class AvatarMixin:
             cz  = start_z - row * (TOTAL_H + GAP_Y)
             item_id = item.get("id")
             name    = item.get("name", "")
+            creator = item.get("username", "")
             is_eq   = (item_id == equipped_id)
             card = DirectButton(
                 frameColor=_EQ_COL if is_eq else _NORM_COL,
@@ -776,12 +869,19 @@ class AvatarMixin:
             if rtt:
                 thumb["frameTexture"] = rtt
                 thumb["frameColor"]   = (1, 1, 1, 1)
-            short = (name[:12] + "…") if len(name) > 13 else name
+            short = (name[:13] + "…") if len(name) > 14 else name
             DirectLabel(
-                text=short, text_fg=_TEXT_H, text_scale=0.022,
+                text=short, text_fg=_TEXT_H, text_scale=0.026,
                 frameColor=(0, 0, 0, 0),
-                parent=card, pos=(0, 0, -TOTAL_H / 2 + NAME_H * 0.55),
+                parent=card, pos=(0, 0, -TOTAL_H / 2 + NAME_H * 0.72),
             )
+            if creator:
+                short_c = (creator[:13] + "…") if len(creator) > 14 else creator
+                DirectLabel(
+                    text=f"by {short_c}", text_fg=_TEXT_D, text_scale=0.020,
+                    frameColor=(0, 0, 0, 0),
+                    parent=card, pos=(0, 0, -TOTAL_H / 2 + NAME_H * 0.22),
+                )
             self._avatar_item_btns[item_id] = card
 
         # Bob-only: "Upload Face" button visible when on the Face tab
@@ -796,7 +896,10 @@ class AvatarMixin:
                 command=self._show_upload_face_dialog,
             )
 
-        # Dim unavailable page buttons
+        # Update page label and dim unavailable pagination buttons
+        page_lbl = getattr(self, '_avatar_items_page_lbl', None)
+        if page_lbl and not page_lbl.isEmpty():
+            page_lbl['text'] = f"Page {page + 1}/{max_page + 1}"
         prev_btn = getattr(self, '_avatar_items_prev_btn', None)
         next_btn = getattr(self, '_avatar_items_next_btn', None)
         _DIM = (0.40, 0.35, 0.52, 1.0)
@@ -804,6 +907,64 @@ class AvatarMixin:
             prev_btn['frameColor'] = _PANEL_DIV if page > 0 else _DIM
         if next_btn and not next_btn.isEmpty():
             next_btn['frameColor'] = _PANEL_DIV if page < max_page else _DIM
+
+    def _make_thumb_textures(self, items, cur_filter):
+        """Generate Texture objects for a list of items based on current filter."""
+        import base64 as _b64
+        from panda3d.core import PNMImage, StringStream, Texture
+        result = {}
+        if cur_filter in ("tshirt", "shirt", "pants"):
+            filtered = [it for it in items if it.get("image_data")]
+            try:
+                result = self._render_shop_thumbnails(filtered, buf_w=256, buf_h=256)
+            except Exception:
+                pass
+        elif cur_filter == "face":
+            for it in items:
+                iid  = it.get("id")
+                idat = it.get("image_data") or ""
+                if "|FACEDATA|" in idat:
+                    idat = idat.split("|FACEDATA|")[0]
+                if iid and idat:
+                    try:
+                        raw  = _b64.b64decode(idat)
+                        face = PNMImage()
+                        if face.read(StringStream(raw), "face.png"):
+                            w, h = face.getXSize(), face.getYSize()
+                            bg = PNMImage(w, h)
+                            bg.fill(1, 1, 1)
+                            bg.alphaFill(1)
+                            if face.hasAlpha():
+                                bg.blendSubImage(face, 0, 0)
+                            else:
+                                bg.copySubImage(face, 0, 0)
+                            tex = Texture()
+                            tex.load(bg)
+                            tex.setMagfilter(Texture.FTLinear)
+                            tex.setMinfilter(Texture.FTLinear)
+                            result[iid] = tex
+                    except Exception:
+                        pass
+        else:  # hat
+            for it in items:
+                iid  = it.get("id")
+                idat = it.get("image_data") or ""
+                if "|HATDATA|" in idat:
+                    idat = idat.split("|HATDATA|")[0]
+                if iid and idat:
+                    try:
+                        raw = _b64.b64decode(idat)
+                        ss  = StringStream(raw)
+                        pnm = PNMImage()
+                        if pnm.read(ss):
+                            tex = Texture()
+                            tex.load(pnm)
+                            tex.setMagfilter(Texture.FTLinear)
+                            tex.setMinfilter(Texture.FTLinear)
+                            result[iid] = tex
+                    except Exception:
+                        pass
+        return result
 
     def _avatar_items_goto_page(self, delta):
         page = getattr(self, '_avatar_items_page', 0) + delta
@@ -816,6 +977,7 @@ class AvatarMixin:
         is_shirt = "|SHIRTDATA|" in idat
         is_pants = "|PANTSDATA|" in idat
         is_face  = "|FACEDATA|"  in idat
+        print(f"[EQUIP] item={item.get('id')} is_hat={is_hat} is_shirt={is_shirt} is_pants={is_pants} is_face={is_face} idat_len={len(idat)}", flush=True)
 
         if is_hat:
             self._on_avatar_hat_equip(item, _ac, _thr)
@@ -992,7 +1154,8 @@ class AvatarMixin:
         token       = getattr(self, "_session_token", None)
 
         if item_id == equipped_id:
-            self._equipped_pants_id = None
+            self._equipped_pants_id  = None
+            self._equipped_pants_b64 = None
             if hasattr(self, "remove_pants"): self.remove_pants()
             self._preview_apply_pants(None)
             if token:
@@ -1106,6 +1269,7 @@ class AvatarMixin:
         item_id     = item.get("id")
         equipped_id = getattr(self, "_equipped_hat_id", None)
         token       = getattr(self, "_session_token", None)
+        print(f"[HAT_EQUIP] called: item_id={item_id} equipped_id={equipped_id}", flush=True)
 
         if item_id == equipped_id:
             self._equipped_hat_id = None
@@ -1144,11 +1308,15 @@ class AvatarMixin:
             if "|HATDATA|" in img:
                 try:
                     hat_data_json = _b64.b64decode(img.split("|HATDATA|", 1)[1]).decode()
+                    print(f"[HAT_EQUIP] hat_data_json extracted, length={len(hat_data_json)}", flush=True)
                 except Exception as e:
                     print(f"[HAT_EQUIP] decode error: {e}", flush=True)
+            else:
+                print(f"[HAT_EQUIP] no |HATDATA| in image_data (len={len(img)})", flush=True)
 
             if hat_data_json:
                 def _apply_now(task, _hd=hat_data_json):
+                    print(f"[HAT_EQUIP] _apply_now task running", flush=True)
                     if hasattr(self, "apply_hat"):
                         self.apply_hat(_hd)
                     self._preview_apply_hat(_hd)
@@ -1233,6 +1401,7 @@ class AvatarMixin:
 
     def _preview_apply_hat(self, hat_data_json):
         """Add or replace the hat model on the avatar preview rig."""
+        print(f"[PREVIEW_HAT] called, has_data={bool(hat_data_json)}", flush=True)
         n = getattr(self, '_avatar_preview_hat_model', None)
         if n and not n.isEmpty():
             n.removeNode()
@@ -1241,6 +1410,7 @@ class AvatarMixin:
             return
         root  = getattr(self, '_avatar_preview_rig_root', None)
         pmask = getattr(self, '_avatar_preview_rig_pmask', BitMask32.allOn())
+        print(f"[PREVIEW_HAT] root={root}, root_empty={root.isEmpty() if root else 'N/A'}, pmask={pmask}", flush=True)
         if not root or root.isEmpty():
             return
         import json as _json, base64, tempfile, os as _os2, shutil
@@ -1261,8 +1431,8 @@ class AvatarMixin:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             tmp_dir = None
             if not hat_model:
+                print("[PREVIEW_HAT] loadModel returned None", flush=True)
                 return
-            hat_model.setR(-90)
             tex_b64 = data.get("texture_b64")
             if tex_b64:
                 from panda3d.core import PNMImage, StringStream, Texture
@@ -1278,15 +1448,26 @@ class AvatarMixin:
             world_scale = [bs[i] * ms[i] for i in range(3)]
             hat_model.reparentTo(root)
             hat_model.setScale(*world_scale)
-            hat_model.setHpr(*data.get("model_hpr", [0, 0, -90]))
+            h0, p0, r0 = data.get("model_hpr", [0, 0, -90])
+            # Preview character's front faces -Y (H=180°), same as in-game.
+            # Add 180° to match the heading offset the follow task applies.
+            hat_model.setHpr(h0 + 180, p0, r0)
             z_off = float(data.get("z_offset", 0.0))
-            hat_model.setPos(0, 0, 4.55 + 0.55 + z_off)
+            x_off = float(data.get("x_offset", 0.0))
+            y_off = float(data.get("y_offset", 0.0))
+            hat_model.setPos(x_off, y_off, 4.55 + 0.55 + z_off)
             hat_model.setShaderOff()
             hat_model.setTwoSided(True)
-            hat_model.show(pmask)
+            # Force hat and all its child geometry nodes visible to the preview camera
+            hat_model.showThrough(pmask)
+            for _child in hat_model.findAllMatches("**"):
+                _child.showThrough(pmask)
             self._avatar_preview_hat_model = hat_model
+            print(f"[PREVIEW_HAT] placed z={hat_model.getPos().z:.2f} scale={hat_model.getScale()}", flush=True)
         except Exception as e:
+            import traceback
             print(f"[PREVIEW_HAT] {e}", flush=True)
+            traceback.print_exc()
         finally:
             if tmp_dir:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1432,6 +1613,17 @@ class AvatarMixin:
 
     def _cleanup_avatar_items_tab(self):
         self.taskMgr.remove("_avatarItemsDrag")
+        prebuilt = getattr(self, '_avatar_rig_prebuilt', False)
+        # Destroy the 2D GUI cards that display the 3D preview (always)
+        for attr in ('_avatar_preview_card', '_avatar_drag_lbl'):
+            node = getattr(self, attr, None)
+            if node and not node.isEmpty():
+                node.destroy()
+            setattr(self, attr, None)
+        if prebuilt:
+            # Rig persists across tab opens — only UI cards were destroyed above
+            return
+        # Full teardown when rig is not prebuilt (e.g. coming from colors)
         saved = getattr(self, '_avatar_saved_cam_mask', None)
         if saved is not None:
             self.camNode.setCameraMask(saved)
