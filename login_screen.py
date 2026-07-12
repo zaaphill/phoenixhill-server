@@ -2616,8 +2616,9 @@ class LoginScreenMixin:
         item_id = item_summary.get("id")
         owned   = item_id in getattr(self, "_shop_owned_ids", set())
         is_mine = (item_summary.get("username") == getattr(self, "_session_username", None))
+        is_admin = getattr(self, "_session_username", None) == "bob"
 
-        if is_mine:
+        if is_mine or is_admin:
             def _do_delete(iid=item_id):
                 token = self._session_token
                 def worker():

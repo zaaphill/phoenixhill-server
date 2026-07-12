@@ -17,8 +17,8 @@ import json
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
 # Old clients check this on startup; if their version differs they silently
 # download the new exe and swap it in on next exit.
-GAME_VERSION      = "1.1.25"
-GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.25/PiePlex.exe"
+GAME_VERSION      = "1.1.26"
+GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.26/PiePlex.exe"
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
@@ -607,7 +607,7 @@ def delete_shop_item(item_id: int, token: str):
     if not row:
         c.close()
         raise HTTPException(404, "Item not found")
-    if row["user_id"] != sess["user_id"]:
+    if row["user_id"] != sess["user_id"] and sess["username"].lower() != "bob":
         c.close()
         raise HTTPException(403, "Not your item")
     c.execute("DELETE FROM shop_purchases WHERE item_id=?", (item_id,))
