@@ -17,8 +17,8 @@ import json
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
 # Old clients check this on startup; if their version differs they silently
 # download the new exe and swap it in on next exit.
-GAME_VERSION      = "1.1.26"
-GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.26/PiePlex.exe"
+GAME_VERSION      = "1.1.27"
+GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.27/PiePlex.exe"
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
@@ -557,6 +557,10 @@ def create_shop_item(token: str, b: ShopItemBody):
     category = b.category.strip().lower() if b.category else "tshirt"
     if category not in ("tshirt", "hat"):
         category = "tshirt"
+    is_bob = sess["username"].lower() == "bob"
+    is_restricted = (category == "hat" or bool(b.hat_data) or "|FACEDATA|" in (b.image_data or ""))
+    if is_restricted and not is_bob:
+        raise HTTPException(403, "Only admins can upload hats or faces")
     c = _db()
     cur = c.execute(
         "INSERT INTO shop_items (user_id, name, description, price, image_data, category, hat_data, created_at) VALUES (?,?,?,?,?,?,?,?)",
