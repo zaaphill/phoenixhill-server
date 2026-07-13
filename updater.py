@@ -25,7 +25,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.27"
+VERSION = "1.1.28"
 
 def _version_url():
     try:

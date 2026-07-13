@@ -17,8 +17,8 @@ import json
 # Bump GAME_VERSION and set GAME_DOWNLOAD_URL each time you ship a new build.
 # Old clients check this on startup; if their version differs they silently
 # download the new exe and swap it in on next exit.
-GAME_VERSION      = "1.1.27"
-GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.27/PiePlex.exe"
+GAME_VERSION      = "1.1.28"
+GAME_DOWNLOAD_URL = "https://github.com/zaaphill/phoenixhill-server/releases/download/v1.1.28/PiePlex.exe"
 
 # Bump this whenever the WebSocket protocol or any critical API changes.
 # The game client checks this on startup and restarts the local server if outdated.
@@ -468,9 +468,8 @@ def api_version():
     return {"version": _SERVER_API_VERSION, "build_visits_exists": True}
 
 
-@app.get("/api/published/{build_id}")
+@app.get("/api/r/{build_id}")
 def get_published_build(build_id: int):
-    # Pure data retrieval — no side effects
     c = _db()
     row = c.execute(
         "SELECT id, name, data FROM builds WHERE id=? AND published=1",
@@ -478,8 +477,12 @@ def get_published_build(build_id: int):
     ).fetchone()
     c.close()
     if not row:
-        raise HTTPException(404, "Build not found or not published")
+        raise HTTPException(404, "Not found")
     return {"ok": True, "id": row["id"], "name": row["name"], "data": row["data"]}
+
+@app.get("/api/published/{build_id}")
+def get_published_build_legacy(build_id: int):
+    raise HTTPException(404, "Not found")
 
 
 @app.post("/api/published/{build_id}/visit")

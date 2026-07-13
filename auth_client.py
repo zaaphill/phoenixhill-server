@@ -67,7 +67,7 @@ def browse_published():
     return _request("GET", "/api/published")
 
 def get_published_build(build_id):
-    return _request("GET", f"/api/published/{build_id}")
+    return _request("GET", f"/api/r/{build_id}")
 
 def post_visit(token, build_id):
     return _request("POST", f"/api/published/{build_id}/visit", params={"token": token})
