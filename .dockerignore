@@ -1,0 +1,9 @@
+*.py
+!server.py
+*.db
+*.session
+*.cfg
+__pycache__
+*.pyc
+models/
+textures/

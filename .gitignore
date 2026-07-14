@@ -1,0 +1,48 @@
+# Sensitive / local-only files — never upload these
+accounts.db
+.session
+.server_starting
+server_log.txt
+server.pid
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Build output
+build/
+dist/
+
+# Large assets not needed for server
+textures/
+*.exr
+*.jpg
+*.png
+*.cur
+*.zip
+Poliigon_GrassPatchyGround_4585.zip
+
+# Binary / media assets
+*.mp3
+*.wav
+*.ogg
+*.ico
+
+# Local config / logs
+settings.json
+build_log.txt
+*.log
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Experimental / scratch files
+main_vr.py
+character_3d.html
+character_reference.html
+
+# Claude Code session data
+.claude/settings.local.json
