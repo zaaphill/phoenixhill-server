@@ -618,27 +618,24 @@ class AvatarMixin:
                     result, _ = _ac.get_owned_items(token)
                     all_owned = (result or {}).get("items", [])
                     self._avatar_items_full_cache = all_owned
+                _NON_TSHIRT = {"hat", "shirt", "pants", "face"}
                 if flt == "hat":
-                    owned_items = [it for it in all_owned if "|HATDATA|" in (it.get("image_data") or "")]
+                    owned_items = [it for it in all_owned if it.get("category") == "hat"]
                 elif flt == "shirt":
-                    owned_items = [it for it in all_owned if "|SHIRTDATA|" in (it.get("image_data") or "")]
+                    owned_items = [it for it in all_owned if it.get("category") == "shirt"]
                 elif flt == "pants":
-                    owned_items = [it for it in all_owned if "|PANTSDATA|" in (it.get("image_data") or "")]
+                    owned_items = [it for it in all_owned if it.get("category") == "pants"]
                 elif flt == "face":
-                    owned_items = [it for it in all_owned if "|FACEDATA|" in (it.get("image_data") or "")]
+                    owned_items = [it for it in all_owned if it.get("category") == "face"]
                 else:
-                    owned_items = [it for it in all_owned
-                                   if "|HATDATA|"    not in (it.get("image_data") or "")
-                                   and "|SHIRTDATA|" not in (it.get("image_data") or "")
-                                   and "|PANTSDATA|" not in (it.get("image_data") or "")
-                                   and "|FACEDATA|"  not in (it.get("image_data") or "")]
+                    owned_items = [it for it in all_owned if it.get("category") not in _NON_TSHIRT]
 
                 preview_b64 = None
                 if eid_t:
                     for it in all_owned:
                         if it.get("id") == eid_t:
                             img = it.get("image_data") or ""
-                            preview_b64 = img if "|HATDATA|" not in img else None
+                            preview_b64 = img if it.get("category") != "hat" else None
                             break
                     if not preview_b64:
                         full, _ = _ac.get_shop_item(eid_t)
@@ -968,11 +965,13 @@ class AvatarMixin:
 
     def _on_avatar_item_equip(self, item):
         import threading as _thr, auth_client as _ac
-        idat     = item.get("image_data") or ""
-        is_hat   = "|HATDATA|"   in idat
-        is_shirt = "|SHIRTDATA|" in idat
-        is_pants = "|PANTSDATA|" in idat
-        is_face  = "|FACEDATA|"  in idat
+        cat  = item.get("category") or ""
+        idat = item.get("image_data") or ""
+        # category field is authoritative; fall back to marker scan for legacy items
+        is_hat   = cat == "hat"   or "|HATDATA|"   in idat
+        is_shirt = cat == "shirt" or "|SHIRTDATA|" in idat
+        is_pants = cat == "pants" or "|PANTSDATA|" in idat
+        is_face  = cat == "face"  or "|FACEDATA|"  in idat
 
         if is_hat:
             self._on_avatar_hat_equip(item, _ac, _thr)
@@ -1010,6 +1009,24 @@ class AvatarMixin:
                 if hasattr(self, "apply_face"):
                     self.apply_face(frames_b64)
                 self._broadcast_face_equip(item_id, frames_b64)
+            else:
+                # List endpoint strips texture data — fetch the full item to get face frames
+                def _fetch_face(iid=item_id):
+                    full, _ = _ac.get_shop_item(iid)
+                    if not full:
+                        return
+                    fi = full.get("image_data") or ""
+                    if "|FACEDATA|" not in fi:
+                        return
+                    fp   = fi.split("|FACEDATA|", 1)[1]
+                    frms = [f for f in fp.split(",") if f]
+                    def _apply(task, _f=frms, _iid=iid):
+                        if hasattr(self, "apply_face"):
+                            self.apply_face(_f)
+                        self._broadcast_face_equip(_iid, _f)
+                        return task.done
+                    self.taskMgr.doMethodLater(0, _apply, "_applyFaceFetch", appendTask=True)
+                _thr.Thread(target=_fetch_face, daemon=True).start()
             if token:
                 _thr.Thread(
                     target=lambda: _ac.equip_face(token, item_id), daemon=True).start()
@@ -1088,7 +1105,7 @@ class AvatarMixin:
     def _on_avatar_shirt_equip(self, item, _ac, _thr):
         item_id    = item.get("id")
         raw_img    = item.get("image_data") or ""
-        image_b64  = raw_img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in raw_img else raw_img
+        image_b64  = raw_img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in raw_img else ""
         equipped_id = getattr(self, "_equipped_shirt_id", None)
         token       = getattr(self, "_session_token", None)
 
@@ -1141,7 +1158,7 @@ class AvatarMixin:
     def _on_avatar_pants_equip(self, item, _ac, _thr):
         item_id    = item.get("id")
         raw_img    = item.get("image_data") or ""
-        image_b64  = raw_img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in raw_img else raw_img
+        image_b64  = raw_img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in raw_img else ""
         equipped_id = getattr(self, "_equipped_pants_id", None)
         token       = getattr(self, "_session_token", None)
 

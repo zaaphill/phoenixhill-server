@@ -9,6 +9,7 @@ _SERVER_INSTANCE_ID = f"{os.getpid()}-{time.time()}"
 from typing import Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 import uvicorn
 import json
@@ -31,6 +32,7 @@ _rooms: dict = {}
 _DB = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.db")
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -155,6 +157,28 @@ def _init_db():
         pass
     c.commit()
     c.close()
+
+_MARKERS = ("|HATDATA|", "|SHIRTDATA|", "|PANTSDATA|", "|FACEDATA|")
+
+def _thumbnail_only(image_data: str) -> str:
+    """Strip texture/config marker data, keeping only the catalog thumbnail."""
+    if not image_data:
+        return image_data
+    for m in _MARKERS:
+        if m in image_data:
+            return image_data.split(m, 1)[0]
+    return image_data
+
+# SQL expression that derives the full item category from stored data.
+_CATEGORY_SQL = """
+    CASE
+        WHEN s.hat_data IS NOT NULL OR s.image_data LIKE '%|HATDATA|%'   THEN 'hat'
+        WHEN s.image_data LIKE '%|SHIRTDATA|%'  THEN 'shirt'
+        WHEN s.image_data LIKE '%|PANTSDATA|%'  THEN 'pants'
+        WHEN s.image_data LIKE '%|FACEDATA|%'   THEN 'face'
+        ELSE COALESCE(s.category, 'tshirt')
+    END
+"""
 
 def _hash(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
@@ -578,15 +602,19 @@ def create_shop_item(token: str, b: ShopItemBody):
 def list_shop_items():
     c = _db()
     rows = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.image_data,
-                  CASE WHEN s.hat_data IS NOT NULL THEN 'hat'
-                       ELSE COALESCE(s.category,'tshirt') END as category,
+        f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
+                  ({_CATEGORY_SQL}) as category,
                   s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
            ORDER BY s.created_at DESC""",
     ).fetchall()
     c.close()
-    return {"items": [dict(r) for r in rows]}
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["image_data"] = _thumbnail_only(d.get("image_data") or "")
+        items.append(d)
+    return {"items": items}
 
 @app.get("/api/shop/items/{item_id}")
 def get_shop_item(item_id: int):
@@ -642,9 +670,8 @@ def get_owned_items(token: str):
     sess = _get_session(token)
     c = _db()
     rows = c.execute(
-        """SELECT s.id, s.name, s.description, s.price, s.image_data,
-                  CASE WHEN s.hat_data IS NOT NULL THEN 'hat'
-                       ELSE COALESCE(s.category,'tshirt') END as category,
+        f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
+                  ({_CATEGORY_SQL}) as category,
                   u.username
            FROM shop_purchases p
            JOIN shop_items s ON p.item_id = s.id
@@ -654,7 +681,12 @@ def get_owned_items(token: str):
         (sess["user_id"],),
     ).fetchall()
     c.close()
-    return {"items": [dict(r) for r in rows]}
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["image_data"] = _thumbnail_only(d.get("image_data") or "")
+        items.append(d)
+    return {"items": items}
 
 @app.put("/api/avatar/equipped_tshirt")
 def equip_tshirt_endpoint(token: str, b: EquipTshirtBody):
