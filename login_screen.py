@@ -82,19 +82,23 @@ class LoginScreenMixin:
 
     @staticmethod
     def _item_is_hat(item):
-        return "|HATDATA|" in (item.get("image_data") or "")
+        cat = item.get("category") or ""
+        return cat == "hat" or "|HATDATA|" in (item.get("image_data") or "")
 
     @staticmethod
     def _item_is_shirt(item):
-        return "|SHIRTDATA|" in (item.get("image_data") or "")
+        cat = item.get("category") or ""
+        return cat == "shirt" or "|SHIRTDATA|" in (item.get("image_data") or "")
 
     @staticmethod
     def _item_is_pants(item):
-        return "|PANTSDATA|" in (item.get("image_data") or "")
+        cat = item.get("category") or ""
+        return cat == "pants" or "|PANTSDATA|" in (item.get("image_data") or "")
 
     @staticmethod
     def _item_is_face(item):
-        return "|FACEDATA|" in (item.get("image_data") or "")
+        cat = item.get("category") or ""
+        return cat == "face" or "|FACEDATA|" in (item.get("image_data") or "")
 
     @staticmethod
     def _item_shirt_b64(item):
