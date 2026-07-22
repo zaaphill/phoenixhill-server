@@ -102,6 +102,7 @@ class BrickMixin:
         self._stone_tex           = None
         self._stone_shader        = None
         self._was_playtest        = False
+        self._face_culled_backup  = {}   # brick -> {vis, grass, wood, stone} original nodes
         if not hasattr(self, '_settings_render_distance'):
             self._settings_render_distance = 1000
 
@@ -201,65 +202,47 @@ class BrickMixin:
         cnode.setFromCollideMask(BitMask32.allOff())
         self.brick_collision_nodes[brick] = brick.attachNewNode(cnode)
 
-    def create_solid_box(self, width, depth, height, color):
+    def create_solid_box(self, width, depth, height, color, visible_faces=None):
+        """Build a colored box geom.  visible_faces (set of 0-5) skips hidden faces:
+        0=bottom(-Z) 1=top(+Z) 2=front(-Y) 3=back(+Y) 4=left(-X) 5=right(+X)"""
         vformat = GeomVertexFormat.get_v3n3c4()
-        vdata = GeomVertexData('solid_box', vformat, Geom.UH_static)
+        vdata   = GeomVertexData('solid_box', vformat, Geom.UH_static)
+        vertex  = GeomVertexWriter(vdata, 'vertex')
+        nw      = GeomVertexWriter(vdata, 'normal')
+        cw      = GeomVertexWriter(vdata, 'color')
+        tris    = GeomTriangles(Geom.UH_static)
 
-        vertex       = GeomVertexWriter(vdata, 'vertex')
-        normal_writer = GeomVertexWriter(vdata, 'normal')
-        color_writer  = GeomVertexWriter(vdata, 'color')
+        hw, hd, hh = width / 2.0, depth / 2.0, height / 2.0
 
-        hw = width  / 2.0
-        hd = depth  / 2.0
-        hh = height / 2.0
-
-        corners = [
-            (-hw, -hd, -hh), ( hw, -hd, -hh), ( hw,  hd, -hh), (-hw,  hd, -hh),
-            (-hw, -hd,  hh), ( hw, -hd,  hh), ( hw,  hd,  hh), (-hw,  hd,  hh),
+        face_quads = [
+            ([(-hw,-hd,-hh),( hw,-hd,-hh),( hw, hd,-hh),(-hw, hd,-hh)], ( 0, 0,-1)),
+            ([(-hw,-hd, hh),( hw,-hd, hh),( hw, hd, hh),(-hw, hd, hh)], ( 0, 0, 1)),
+            ([(-hw,-hd,-hh),( hw,-hd,-hh),( hw,-hd, hh),(-hw,-hd, hh)], ( 0,-1, 0)),
+            ([(-hw, hd,-hh),( hw, hd,-hh),( hw, hd, hh),(-hw, hd, hh)], ( 0, 1, 0)),
+            ([(-hw,-hd,-hh),(-hw, hd,-hh),(-hw, hd, hh),(-hw,-hd, hh)], (-1, 0, 0)),
+            ([( hw,-hd,-hh),( hw, hd,-hh),( hw, hd, hh),( hw,-hd, hh)], ( 1, 0, 0)),
         ]
 
-        faces = [
-            ((0, 1, 2, 3), (0,  0, -1)),
-            ((4, 5, 6, 7), (0,  0,  1)),
-            ((0, 4, 5, 1), (0, -1,  0)),
-            ((3, 7, 6, 2), (0,  1,  0)),
-            ((0, 3, 7, 4), (-1, 0,  0)),
-            ((1, 5, 6, 2), (1,  0,  0)),
-        ]
+        for fi, (corners, normal) in enumerate(face_quads):
+            if visible_faces is not None and fi not in visible_faces:
+                continue
+            base = vdata.getNumRows()
+            for cx, cy, cz in corners:
+                vertex.addData3(cx, cy, cz)
+                nw.addData3(*normal)
+                cw.addData4(*color)
+            tris.addVertices(base, base + 1, base + 2)
+            tris.addVertices(base, base + 2, base + 3)
 
-        vert_normals = [Vec3(0, 0, 0) for _ in range(8)]
-        for inds, fnormal in faces:
-            fn = Vec3(fnormal[0], fnormal[1], fnormal[2])
-            for i in inds:
-                vert_normals[i] += fn
-        for i in range(8):
-            n = vert_normals[i]
-            if n.lengthSquared() == 0:
-                n = Vec3(0, 0, 1)
-            else:
-                n.normalize()
-            vert_normals[i] = n
-
-        for i, pos in enumerate(corners):
-            vertex.add_data3(pos[0], pos[1], pos[2])
-            n = vert_normals[i]
-            normal_writer.add_data3(n.x, n.y, n.z)
-            color_writer.add_data4(color[0], color[1], color[2], color[3])
-
-        tris = GeomTriangles(Geom.UH_static)
-        for inds, _ in faces:
-            a, b, c, d = inds
-            tris.add_vertices(a, b, c)
-            tris.add_vertices(a, c, d)
+        if vdata.getNumRows() == 0:
+            vertex.addData3(0, 0, 0); nw.addData3(0, 0, 1); cw.addData4(0, 0, 0, 0)
 
         geom = Geom(vdata)
-        geom.add_primitive(tris)
-
+        geom.addPrimitive(tris)
         node = GeomNode('solid_box')
-        node.add_geom(geom)
-
+        node.addGeom(geom)
         np = NodePath(node)
-        np.setTwoSided(True)
+        np.setTwoSided(False)
         np.setShaderOff()
         return np
 
@@ -416,7 +399,7 @@ class BrickMixin:
                     return True
         return False
 
-    def _create_grass_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1):
+    def _create_grass_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1, hidden_faces=None):
         """All 6 faces of a brick, textured with grass.
         cx/cy/cz = world-space centre; sx/sy/sz = world-space dimensions.
         Tile density is fixed so the texture never stretches when resized.
@@ -446,24 +429,25 @@ class BrickMixin:
         tsy = sy / 25.0
         tsh = sz / 25.0
 
-        # Top
-        quad([(x0,y0,z1, 0,0),(x1,y0,z1, ttx,0),(x1,y1,z1, ttx,tty),(x0,y1,z1, 0,tty)],
-             0, 0, 1)
-        # Bottom
-        quad([(x0,y0,z0, 0,0),(x0,y1,z0, 0,tty),(x1,y1,z0, ttx,tty),(x1,y0,z0, ttx,0)],
-             0, 0, -1)
-        # Front (+Y)
-        quad([(x0,y1,z0, 0,0),(x1,y1,z0, tsx,0),(x1,y1,z1, tsx,tsh),(x0,y1,z1, 0,tsh)],
-             0, 1, 0)
-        # Back (-Y)
-        quad([(x1,y0,z0, 0,0),(x0,y0,z0, tsx,0),(x0,y0,z1, tsx,tsh),(x1,y0,z1, 0,tsh)],
-             0, -1, 0)
-        # Right (+X)
-        quad([(x1,y1,z0, 0,0),(x1,y0,z0, tsy,0),(x1,y0,z1, tsy,tsh),(x1,y1,z1, 0,tsh)],
-             1, 0, 0)
-        # Left (-X)
-        quad([(x0,y0,z0, 0,0),(x0,y1,z0, tsy,0),(x0,y1,z1, tsy,tsh),(x0,y0,z1, 0,tsh)],
-             -1, 0, 0)
+        hf = hidden_faces or set()
+        if 1 not in hf:  # top (+Z)
+            quad([(x0,y0,z1, 0,0),(x1,y0,z1, ttx,0),(x1,y1,z1, ttx,tty),(x0,y1,z1, 0,tty)],
+                 0, 0, 1)
+        if 0 not in hf:  # bottom (-Z)
+            quad([(x0,y0,z0, 0,0),(x0,y1,z0, 0,tty),(x1,y1,z0, ttx,tty),(x1,y0,z0, ttx,0)],
+                 0, 0, -1)
+        if 3 not in hf:  # back (+Y)
+            quad([(x0,y1,z0, 0,0),(x1,y1,z0, tsx,0),(x1,y1,z1, tsx,tsh),(x0,y1,z1, 0,tsh)],
+                 0, 1, 0)
+        if 2 not in hf:  # front (-Y)
+            quad([(x1,y0,z0, 0,0),(x0,y0,z0, tsx,0),(x0,y0,z1, tsx,tsh),(x1,y0,z1, 0,tsh)],
+                 0, -1, 0)
+        if 5 not in hf:  # right (+X)
+            quad([(x1,y1,z0, 0,0),(x1,y0,z0, tsy,0),(x1,y0,z1, tsy,tsh),(x1,y1,z1, 0,tsh)],
+                 1, 0, 0)
+        if 4 not in hf:  # left (-X)
+            quad([(x0,y0,z0, 0,0),(x0,y1,z0, tsy,0),(x0,y1,z1, tsy,tsh),(x0,y0,z1, 0,tsh)],
+                 -1, 0, 0)
 
         geom = Geom(vdata)
         geom.addPrimitive(tris)
@@ -508,7 +492,7 @@ class BrickMixin:
         self.brick_last_pos[brick]     = Vec3(p)
         self.brick_last_hpr[brick]     = Vec3(h)
 
-    def _create_wood_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1):
+    def _create_wood_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1, hidden_faces=None):
         fmt   = GeomVertexFormat.getV3n3t2()
         vdata = GeomVertexData('wood_base', fmt, Geom.UHStatic)
         vw    = GeomVertexWriter(vdata, 'vertex')
@@ -531,12 +515,13 @@ class BrickMixin:
             tris.addVertices(base, base+1, base+2)
             tris.addVertices(base, base+2, base+3)
 
-        quad([(x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)], (0,0,1),  [(0,0),(ttx,0),(ttx,tty),(0,tty)])
-        quad([(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0)], (0,0,-1), [(0,0),(ttx,0),(ttx,tty),(0,tty)])
-        quad([(x0,y0,z0),(x1,y0,z0),(x1,y0,z1),(x0,y0,z1)], (0,-1,0), [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
-        quad([(x0,y1,z0),(x1,y1,z0),(x1,y1,z1),(x0,y1,z1)], (0,1,0),  [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
-        quad([(x0,y0,z0),(x0,y1,z0),(x0,y1,z1),(x0,y0,z1)], (-1,0,0), [(0,0),(tty,0),(tty,ttz),(0,ttz)])
-        quad([(x1,y0,z0),(x1,y1,z0),(x1,y1,z1),(x1,y0,z1)], (1,0,0),  [(0,0),(tty,0),(tty,ttz),(0,ttz)])
+        hf = hidden_faces or set()
+        if 1 not in hf: quad([(x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)], (0,0,1),  [(0,0),(ttx,0),(ttx,tty),(0,tty)])
+        if 0 not in hf: quad([(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0)], (0,0,-1), [(0,0),(ttx,0),(ttx,tty),(0,tty)])
+        if 2 not in hf: quad([(x0,y0,z0),(x1,y0,z0),(x1,y0,z1),(x0,y0,z1)], (0,-1,0), [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
+        if 3 not in hf: quad([(x0,y1,z0),(x1,y1,z0),(x1,y1,z1),(x0,y1,z1)], (0,1,0),  [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
+        if 4 not in hf: quad([(x0,y0,z0),(x0,y1,z0),(x0,y1,z1),(x0,y0,z1)], (-1,0,0), [(0,0),(tty,0),(tty,ttz),(0,ttz)])
+        if 5 not in hf: quad([(x1,y0,z0),(x1,y1,z0),(x1,y1,z1),(x1,y0,z1)], (1,0,0),  [(0,0),(tty,0),(tty,ttz),(0,ttz)])
 
         geom = Geom(vdata)
         geom.addPrimitive(tris)
@@ -580,7 +565,7 @@ class BrickMixin:
         self.brick_last_pos[brick]    = Vec3(p)
         self.brick_last_hpr[brick]    = Vec3(h)
 
-    def _create_stone_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1):
+    def _create_stone_shell(self, cx=0, cy=0, cz=0, sx=50, sy=50, sz=1, hidden_faces=None):
         fmt   = GeomVertexFormat.getV3n3t2()
         vdata = GeomVertexData('stone_base', fmt, Geom.UHStatic)
         vw    = GeomVertexWriter(vdata, 'vertex')
@@ -603,12 +588,13 @@ class BrickMixin:
             tris.addVertices(base, base+1, base+2)
             tris.addVertices(base, base+2, base+3)
 
-        quad([(x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)], (0,0,1),  [(0,0),(ttx,0),(ttx,tty),(0,tty)])
-        quad([(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0)], (0,0,-1), [(0,0),(ttx,0),(ttx,tty),(0,tty)])
-        quad([(x0,y0,z0),(x1,y0,z0),(x1,y0,z1),(x0,y0,z1)], (0,-1,0), [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
-        quad([(x0,y1,z0),(x1,y1,z0),(x1,y1,z1),(x0,y1,z1)], (0,1,0),  [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
-        quad([(x0,y0,z0),(x0,y1,z0),(x0,y1,z1),(x0,y0,z1)], (-1,0,0), [(0,0),(tty,0),(tty,ttz),(0,ttz)])
-        quad([(x1,y0,z0),(x1,y1,z0),(x1,y1,z1),(x1,y0,z1)], (1,0,0),  [(0,0),(tty,0),(tty,ttz),(0,ttz)])
+        hf = hidden_faces or set()
+        if 1 not in hf: quad([(x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)], (0,0,1),  [(0,0),(ttx,0),(ttx,tty),(0,tty)])
+        if 0 not in hf: quad([(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0)], (0,0,-1), [(0,0),(ttx,0),(ttx,tty),(0,tty)])
+        if 2 not in hf: quad([(x0,y0,z0),(x1,y0,z0),(x1,y0,z1),(x0,y0,z1)], (0,-1,0), [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
+        if 3 not in hf: quad([(x0,y1,z0),(x1,y1,z0),(x1,y1,z1),(x0,y1,z1)], (0,1,0),  [(0,0),(ttx,0),(ttx,ttz),(0,ttz)])
+        if 4 not in hf: quad([(x0,y0,z0),(x0,y1,z0),(x0,y1,z1),(x0,y0,z1)], (-1,0,0), [(0,0),(tty,0),(tty,ttz),(0,ttz)])
+        if 5 not in hf: quad([(x1,y0,z0),(x1,y1,z0),(x1,y1,z1),(x1,y0,z1)], (1,0,0),  [(0,0),(tty,0),(tty,ttz),(0,ttz)])
 
         geom = Geom(vdata)
         geom.addPrimitive(tris)
@@ -1271,9 +1257,147 @@ class BrickMixin:
             self._refresh_hierarchy()
         self._push_undo(undo)
 
+    # ── Face culling ──────────────────────────────────────────────────────────
+
+    def _get_brick_bounds_aa(self, brick):
+        """World AABB for an axis-aligned brick, or None if rotated."""
+        hpr = brick.getHpr()
+        if abs(hpr.x) > 0.5 or abs(hpr.y) > 0.5 or abs(hpr.z) > 0.5:
+            return None
+        p = brick.getPos(); s = brick.getScale()
+        return p.x, p.x + s.x, p.y, p.y + s.y, p.z, p.z + s.z
+
+    def _compute_visible_faces(self, brick):
+        """Return frozenset of face indices not fully occluded by a single neighbor.
+        Indices: 0=bottom(-Z) 1=top(+Z) 2=front(-Y) 3=back(+Y) 4=left(-X) 5=right(+X)"""
+        b = self._get_brick_bounds_aa(brick)
+        if b is None:
+            return frozenset(range(6))
+        ax0, ax1, ay0, ay1, az0, az1 = b
+        EPS = 0.05
+        p = brick.getPos(); s = brick.getScale()
+        center = Vec3(p.x + s.x * 0.5, p.y + s.y * 0.5, p.z + s.z * 0.5)
+        radius = max(s.x, s.y, s.z) * 2 + _GRID_CELL
+        visible = set(range(6))
+        for nb in self._grid_nearby(center, radius):
+            if nb is brick or not visible:
+                continue
+            nb_b = self._get_brick_bounds_aa(nb)
+            if nb_b is None:
+                continue
+            bx0, bx1, by0, by1, bz0, bz1 = nb_b
+            if 0 in visible and abs(bz1 - az0) < EPS and bx0 <= ax0 + EPS and bx1 >= ax1 - EPS and by0 <= ay0 + EPS and by1 >= ay1 - EPS:
+                visible.discard(0)
+            if 1 in visible and abs(bz0 - az1) < EPS and bx0 <= ax0 + EPS and bx1 >= ax1 - EPS and by0 <= ay0 + EPS and by1 >= ay1 - EPS:
+                visible.discard(1)
+            if 2 in visible and abs(by1 - ay0) < EPS and bx0 <= ax0 + EPS and bx1 >= ax1 - EPS and bz0 <= az0 + EPS and bz1 >= az1 - EPS:
+                visible.discard(2)
+            if 3 in visible and abs(by0 - ay1) < EPS and bx0 <= ax0 + EPS and bx1 >= ax1 - EPS and bz0 <= az0 + EPS and bz1 >= az1 - EPS:
+                visible.discard(3)
+            if 4 in visible and abs(bx1 - ax0) < EPS and by0 <= ay0 + EPS and by1 >= ay1 - EPS and bz0 <= az0 + EPS and bz1 >= az1 - EPS:
+                visible.discard(4)
+            if 5 in visible and abs(bx0 - ax1) < EPS and by0 <= ay0 + EPS and by1 >= ay1 - EPS and bz0 <= az0 + EPS and bz1 >= az1 - EPS:
+                visible.discard(5)
+        return frozenset(visible)
+
+    def _enter_playtest_face_cull(self):
+        self._face_culled_backup = {}
+        for brick in self.bricks:
+            visible = self._compute_visible_faces(brick)
+            if len(visible) == 6:
+                continue
+            hidden = {i for i in range(6) if i not in visible}
+            backup = {}
+
+            # Solid-colour visual
+            old_vis = self.brick_hitbox_visuals.get(brick)
+            if old_vis and not old_vis.isEmpty():
+                col = self.brick_colors.get(brick, (0.5, 0.5, 0.5, 0.7))
+                new_vis = self.create_solid_box(
+                    self.brick_base_width, self.brick_base_depth, self.brick_base_height,
+                    col, visible_faces=visible)
+                new_vis.reparentTo(self.render)
+                self.update_brick_hitbox_visual_scale(brick, new_vis)
+                old_vis.stash()
+                self.brick_hitbox_visuals[brick] = new_vis
+                backup['vis'] = old_vis
+
+            # Grass shell
+            old_g = self.brick_grass_shells.get(brick)
+            if old_g and not old_g.isEmpty():
+                s = brick.getScale(); h = brick.getHpr()
+                wc = brick.getMat().xformPoint(Point3(0.5, 0.5, 0.5))
+                new_g = self._create_grass_shell(cx=0, cy=0, cz=0, sx=s.x, sy=s.y, sz=s.z, hidden_faces=hidden)
+                new_g.setShaderInput('brickColor', Vec4(*self.brick_grass_color.get(brick, (0.15, 0.49, 0.19, 1.0))))
+                new_g.reparentTo(self.render); new_g.setPos(Vec3(wc)); new_g.setHpr(h)
+                old_g.stash()
+                self.brick_grass_shells[brick] = new_g
+                backup['grass'] = old_g
+
+            # Wood shell
+            old_w = self.brick_wood_shells.get(brick)
+            if old_w and not old_w.isEmpty():
+                s = brick.getScale(); h = brick.getHpr()
+                wc = brick.getMat().xformPoint(Point3(0.5, 0.5, 0.5))
+                new_w = self._create_wood_shell(cx=0, cy=0, cz=0, sx=s.x, sy=s.y, sz=s.z, hidden_faces=hidden)
+                new_w.setShaderInput('brickColor', Vec4(*self.brick_wood_color.get(brick, (0.80, 0.60, 0.35, 1.0))))
+                new_w.reparentTo(self.render); new_w.setPos(Vec3(wc)); new_w.setHpr(h)
+                old_w.stash()
+                self.brick_wood_shells[brick] = new_w
+                backup['wood'] = old_w
+
+            # Stone shell
+            old_s = self.brick_stone_shells.get(brick)
+            if old_s and not old_s.isEmpty():
+                s = brick.getScale(); h = brick.getHpr()
+                wc = brick.getMat().xformPoint(Point3(0.5, 0.5, 0.5))
+                new_s = self._create_stone_shell(cx=0, cy=0, cz=0, sx=s.x, sy=s.y, sz=s.z, hidden_faces=hidden)
+                new_s.setShaderInput('brickColor', Vec4(*self.brick_stone_color.get(brick, (0.75, 0.72, 0.68, 1.0))))
+                new_s.reparentTo(self.render); new_s.setPos(Vec3(wc)); new_s.setHpr(h)
+                old_s.stash()
+                self.brick_stone_shells[brick] = new_s
+                backup['stone'] = old_s
+
+            if backup:
+                self._face_culled_backup[brick] = backup
+
+    def _exit_playtest_face_cull(self):
+        for brick, backup in self._face_culled_backup.items():
+            if 'vis' in backup:
+                cur = self.brick_hitbox_visuals.get(brick)
+                if cur and not cur.isEmpty():
+                    cur.removeNode()
+                orig = backup['vis']
+                orig.unstash()
+                self.brick_hitbox_visuals[brick] = orig
+            if 'grass' in backup:
+                cur = self.brick_grass_shells.get(brick)
+                if cur and not cur.isEmpty():
+                    cur.removeNode()
+                orig = backup['grass']
+                orig.unstash()
+                self.brick_grass_shells[brick] = orig
+            if 'wood' in backup:
+                cur = self.brick_wood_shells.get(brick)
+                if cur and not cur.isEmpty():
+                    cur.removeNode()
+                orig = backup['wood']
+                orig.unstash()
+                self.brick_wood_shells[brick] = orig
+            if 'stone' in backup:
+                cur = self.brick_stone_shells.get(brick)
+                if cur and not cur.isEmpty():
+                    cur.removeNode()
+                orig = backup['stone']
+                orig.unstash()
+                self.brick_stone_shells[brick] = orig
+        self._face_culled_backup = {}
+
     def updateVisualHitboxes(self, task):
-        # Restore visibility when returning from playtest to editor
+        if self.is_playtest and not self._was_playtest:
+            self._enter_playtest_face_cull()
         if not self.is_playtest and self._was_playtest:
+            self._exit_playtest_face_cull()
             self._restore_all_brick_visibility()
         self._was_playtest = self.is_playtest
 
