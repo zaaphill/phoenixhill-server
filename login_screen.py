@@ -2370,7 +2370,29 @@ class LoginScreenMixin:
             pass
         try:
             if hat_items:
-                cache.update(self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512))
+                hat_rendered = self._render_hat_thumbnails(hat_items, buf_w=512, buf_h=512)
+                cache.update(hat_rendered)
+                # Fallback: hats with no 3D data use the flat thumbnail image
+                from panda3d.core import PNMImage, StringStream, Texture
+                import base64 as _b64hf
+                for it in hat_items:
+                    iid = it.get("id")
+                    if iid in hat_rendered:
+                        continue
+                    img = it.get("image_data") or ""
+                    if not img:
+                        continue
+                    try:
+                        raw = _b64hf.b64decode(img)
+                        pnm = PNMImage()
+                        if pnm.read(StringStream(raw)):
+                            tex = Texture()
+                            tex.load(pnm)
+                            tex.setMagfilter(Texture.FTLinear)
+                            tex.setMinfilter(Texture.FTLinear)
+                            cache[iid] = tex
+                    except Exception:
+                        pass
         except Exception:
             pass
         try:

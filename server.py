@@ -171,6 +171,16 @@ def _init_db():
             )
     except Exception:
         pass
+    # One-time migration: backfill hat_data for hats uploaded before the hat_data column existed.
+    try:
+        rows = c.execute(
+            "SELECT id, image_data FROM shop_items WHERE hat_data IS NULL AND image_data LIKE '%|HATDATA|%'"
+        ).fetchall()
+        for row in rows:
+            hat_payload = row["image_data"].split("|HATDATA|", 1)[1]
+            c.execute("UPDATE shop_items SET hat_data=? WHERE id=?", (hat_payload, row["id"]))
+    except Exception:
+        pass
     c.commit()
     c.close()
 
