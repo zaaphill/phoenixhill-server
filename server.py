@@ -604,7 +604,7 @@ def list_shop_items():
     rows = c.execute(
         f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
                   ({_CATEGORY_SQL}) as category,
-                  s.created_at, u.username
+                  s.hat_data, s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
            ORDER BY s.created_at DESC""",
     ).fetchall()
@@ -672,7 +672,7 @@ def get_owned_items(token: str):
     rows = c.execute(
         f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
                   ({_CATEGORY_SQL}) as category,
-                  u.username
+                  s.hat_data, u.username
            FROM shop_purchases p
            JOIN shop_items s ON p.item_id = s.id
            JOIN users u ON s.user_id = u.id

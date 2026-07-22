@@ -121,10 +121,19 @@ class LoginScreenMixin:
 
     @staticmethod
     def _item_hat_data_json(item):
-        img = item.get("image_data") or ""
+        import base64
+        # Prefer the dedicated hat_data field (present on list responses after
+        # bandwidth optimization stripped it from image_data).
+        raw = item.get("hat_data") if item else None
+        if raw:
+            try:
+                return base64.b64decode(raw).decode()
+            except Exception:
+                pass
+        # Fallback: extract from image_data for individually-fetched items
+        img = (item or {}).get("image_data") or ""
         if "|HATDATA|" not in img:
             return None
-        import base64
         try:
             return base64.b64decode(img.split("|HATDATA|", 1)[1]).decode()
         except Exception:
@@ -2389,10 +2398,12 @@ class LoginScreenMixin:
         for it in items:
             iid = it.get("id")
             img = it.get("image_data") or ""
-            if "|FACEDATA|" not in img:
+            # After server-side stripping, image_data is already the thumbnail.
+            # For individually-fetched items it may still have the marker.
+            thumb_b64 = img.split("|FACEDATA|")[0] if "|FACEDATA|" in img else img
+            if not thumb_b64:
                 continue
             try:
-                thumb_b64 = img.split("|FACEDATA|")[0]
                 raw = _b64.b64decode(thumb_b64)
                 face = PNMImage()
                 face.read(StringStream(raw), "face.png")
