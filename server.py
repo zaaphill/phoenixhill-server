@@ -609,12 +609,7 @@ def list_shop_items():
            ORDER BY s.created_at DESC""",
     ).fetchall()
     c.close()
-    items = []
-    for r in rows:
-        d = dict(r)
-        d["image_data"] = _thumbnail_only(d.get("image_data") or "")
-        items.append(d)
-    return {"items": items}
+    return {"items": [dict(r) for r in rows]}
 
 @app.get("/api/shop/items/{item_id}")
 def get_shop_item(item_id: int):
@@ -681,12 +676,7 @@ def get_owned_items(token: str):
         (sess["user_id"],),
     ).fetchall()
     c.close()
-    items = []
-    for r in rows:
-        d = dict(r)
-        d["image_data"] = _thumbnail_only(d.get("image_data") or "")
-        items.append(d)
-    return {"items": items}
+    return {"items": [dict(r) for r in rows]}
 
 @app.put("/api/avatar/equipped_tshirt")
 def equip_tshirt_endpoint(token: str, b: EquipTshirtBody):

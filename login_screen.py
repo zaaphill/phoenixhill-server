@@ -2398,12 +2398,10 @@ class LoginScreenMixin:
         for it in items:
             iid = it.get("id")
             img = it.get("image_data") or ""
-            # After server-side stripping, image_data is already the thumbnail.
-            # For individually-fetched items it may still have the marker.
-            thumb_b64 = img.split("|FACEDATA|")[0] if "|FACEDATA|" in img else img
-            if not thumb_b64:
+            if "|FACEDATA|" not in img:
                 continue
             try:
+                thumb_b64 = img.split("|FACEDATA|")[0]
                 raw = _b64.b64decode(thumb_b64)
                 face = PNMImage()
                 face.read(StringStream(raw), "face.png")
