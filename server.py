@@ -155,6 +155,22 @@ def _init_db():
         c.execute("ALTER TABLE shop_items ADD COLUMN hat_data TEXT DEFAULT NULL")
     except Exception:
         pass
+    try:
+        c.execute("ALTER TABLE shop_items ADD COLUMN thumbnail TEXT DEFAULT NULL")
+    except Exception:
+        pass
+    # One-time migration: populate thumbnail for any item that doesn't have one yet.
+    try:
+        rows = c.execute(
+            "SELECT id, image_data FROM shop_items WHERE thumbnail IS NULL AND image_data IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            c.execute(
+                "UPDATE shop_items SET thumbnail=? WHERE id=?",
+                (_thumbnail_only(row["image_data"]), row["id"]),
+            )
+    except Exception:
+        pass
     c.commit()
     c.close()
 
@@ -589,9 +605,9 @@ def create_shop_item(token: str, b: ShopItemBody):
         raise HTTPException(403, "Only admins can upload hats or faces")
     c = _db()
     cur = c.execute(
-        "INSERT INTO shop_items (user_id, name, description, price, image_data, category, hat_data, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO shop_items (user_id, name, description, price, image_data, thumbnail, category, hat_data, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
         (sess["user_id"], name, b.description.strip(), max(0, b.price), b.image_data,
-         category, b.hat_data or None, time.time()),
+         _thumbnail_only(b.image_data), category, b.hat_data or None, time.time()),
     )
     item_id = cur.lastrowid
     c.commit()
@@ -602,7 +618,8 @@ def create_shop_item(token: str, b: ShopItemBody):
 def list_shop_items():
     c = _db()
     rows = c.execute(
-        f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
+        f"""SELECT s.id, s.name, s.description, s.price,
+                  COALESCE(s.thumbnail, s.image_data) as image_data,
                   ({_CATEGORY_SQL}) as category,
                   s.hat_data, s.created_at, u.username
            FROM shop_items s JOIN users u ON s.user_id = u.id
@@ -665,7 +682,8 @@ def get_owned_items(token: str):
     sess = _get_session(token)
     c = _db()
     rows = c.execute(
-        f"""SELECT s.id, s.name, s.description, s.price, s.image_data,
+        f"""SELECT s.id, s.name, s.description, s.price,
+                  COALESCE(s.thumbnail, s.image_data) as image_data,
                   ({_CATEGORY_SQL}) as category,
                   s.hat_data, u.username
            FROM shop_purchases p

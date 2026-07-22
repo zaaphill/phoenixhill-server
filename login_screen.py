@@ -1855,11 +1855,12 @@ class LoginScreenMixin:
             img = it.get("image_data", "")
             if not img:
                 continue
-            if "|SHIRTDATA|" in img:
-                b64 = img.split("|SHIRTDATA|")[0]
+            cat = it.get("category") or ""
+            if cat == "shirt" or "|SHIRTDATA|" in img:
+                b64 = img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in img else img
                 items_with_img.append((it["id"], b64, "shirt"))
-            elif "|PANTSDATA|" in img:
-                b64 = img.split("|PANTSDATA|")[0]
+            elif cat == "pants" or "|PANTSDATA|" in img:
+                b64 = img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in img else img
                 items_with_img.append((it["id"], b64, "pants"))
             else:
                 items_with_img.append((it["id"], img, "tshirt"))
@@ -2398,10 +2399,10 @@ class LoginScreenMixin:
         for it in items:
             iid = it.get("id")
             img = it.get("image_data") or ""
-            if "|FACEDATA|" not in img:
+            if not img:
                 continue
             try:
-                thumb_b64 = img.split("|FACEDATA|")[0]
+                thumb_b64 = img.split("|FACEDATA|")[0] if "|FACEDATA|" in img else img
                 raw = _b64.b64decode(thumb_b64)
                 face = PNMImage()
                 face.read(StringStream(raw), "face.png")

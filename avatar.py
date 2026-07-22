@@ -1105,7 +1105,7 @@ class AvatarMixin:
     def _on_avatar_shirt_equip(self, item, _ac, _thr):
         item_id    = item.get("id")
         raw_img    = item.get("image_data") or ""
-        image_b64  = raw_img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in raw_img else raw_img
+        image_b64  = raw_img.split("|SHIRTDATA|")[0] if "|SHIRTDATA|" in raw_img else None
         equipped_id = getattr(self, "_equipped_shirt_id", None)
         token       = getattr(self, "_session_token", None)
 
@@ -1158,7 +1158,7 @@ class AvatarMixin:
     def _on_avatar_pants_equip(self, item, _ac, _thr):
         item_id    = item.get("id")
         raw_img    = item.get("image_data") or ""
-        image_b64  = raw_img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in raw_img else raw_img
+        image_b64  = raw_img.split("|PANTSDATA|")[0] if "|PANTSDATA|" in raw_img else None
         equipped_id = getattr(self, "_equipped_pants_id", None)
         token       = getattr(self, "_session_token", None)
 
