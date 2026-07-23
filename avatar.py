@@ -1344,6 +1344,57 @@ class AvatarMixin:
 
         self._refresh_avatar_item_highlights()
 
+    def _random_outfit(self):
+        """Press R: unequip everything, equip one random item per category from inventory."""
+        import random, threading as _thr, auth_client as _ac
+
+        # Strip all current visuals
+        if hasattr(self, "remove_tshirt"): self.remove_tshirt()
+        if hasattr(self, "remove_shirt"):  self.remove_shirt()
+        if hasattr(self, "remove_pants"):  self.remove_pants()
+        if hasattr(self, "remove_hat"):    self.remove_hat()
+        if hasattr(self, "remove_face"):   self.remove_face()
+        self._preview_apply_tshirt(None)
+        self._preview_apply_shirt(None)
+        self._preview_apply_pants(None)
+        self._preview_apply_hat(None)
+
+        # Clear equipped IDs so equip functions won't toggle-off
+        self._equipped_tshirt_id = None
+        self._equipped_shirt_id  = None
+        self._equipped_pants_id  = None
+        self._equipped_hat_id    = None
+        self._equipped_face_id   = None
+
+        items = list(getattr(self, "_avatar_items_full_cache", None) or [])
+
+        def _do_equip(items=items):
+            if not items:
+                token = getattr(self, "_session_token", None)
+                if token:
+                    result, _ = _ac.get_owned_items(token)
+                    items = (result or {}).get("items", [])
+                    self._avatar_items_full_cache = items
+
+            by_cat = {}
+            for it in items:
+                cat = it.get("category") or "tshirt"
+                by_cat.setdefault(cat, []).append(it)
+
+            chosen = []
+            for cat in ("shirt", "pants", "hat", "face"):
+                pool = by_cat.get(cat, [])
+                if pool:
+                    chosen.append(random.choice(pool))
+
+            def _apply(task, _chosen=chosen):
+                for it in _chosen:
+                    self._on_avatar_item_equip(it)
+                return task.done
+            self.taskMgr.doMethodLater(0, _apply, "_randomOutfitApply", appendTask=True)
+
+        _thr.Thread(target=_do_equip, daemon=True).start()
+
     def _refresh_avatar_item_highlights(self):
         cur_filter  = getattr(self, '_avatar_items_filter', 'tshirt')
         if cur_filter == "hat":

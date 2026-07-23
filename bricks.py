@@ -1006,6 +1006,14 @@ class BrickMixin:
         return {'bricks': bricks}
 
     def _clear_all_bricks(self):
+        # Discard any stashed face-cull backups so orphaned nodes don't leak
+        for backup in getattr(self, "_face_culled_backup", {}).values():
+            for node in backup.values():
+                if node and not node.isEmpty():
+                    node.removeNode()
+        self._face_culled_backup = {}
+        self._was_playtest = False  # prevent _exit_playtest_face_cull from running next frame
+
         self.clear_selection()
         for b in list(self.bricks):
             vis = self.brick_hitbox_visuals.pop(b, None)

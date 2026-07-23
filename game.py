@@ -278,6 +278,9 @@ class MyGame(ShowBase, BrickMixin, PickingMixin, UIMixin, CharacterMixin, Camera
         self.accept('f9', _f9_pants_debug)
         self.accept('f11', self._toggle_fullscreen)
 
+        # Trailer helper — R: randomise outfit from inventory
+        self.accept('r', self._random_outfit)
+
     def _toggle_fullscreen(self):
         import ctypes
         props = WindowProperties()
