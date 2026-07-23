@@ -215,12 +215,12 @@ class BrickMixin:
         hw, hd, hh = width / 2.0, depth / 2.0, height / 2.0
 
         face_quads = [
-            ([(-hw,-hd,-hh),( hw,-hd,-hh),( hw, hd,-hh),(-hw, hd,-hh)], ( 0, 0,-1)),
-            ([(-hw,-hd, hh),( hw,-hd, hh),( hw, hd, hh),(-hw, hd, hh)], ( 0, 0, 1)),
-            ([(-hw,-hd,-hh),( hw,-hd,-hh),( hw,-hd, hh),(-hw,-hd, hh)], ( 0,-1, 0)),
-            ([(-hw, hd,-hh),( hw, hd,-hh),( hw, hd, hh),(-hw, hd, hh)], ( 0, 1, 0)),
-            ([(-hw,-hd,-hh),(-hw, hd,-hh),(-hw, hd, hh),(-hw,-hd, hh)], (-1, 0, 0)),
-            ([( hw,-hd,-hh),( hw, hd,-hh),( hw, hd, hh),( hw,-hd, hh)], ( 1, 0, 0)),
+            ([(-hw, hd,-hh),( hw, hd,-hh),( hw,-hd,-hh),(-hw,-hd,-hh)], ( 0, 0,-1)),  # 0 bottom -Z
+            ([(-hw,-hd, hh),( hw,-hd, hh),( hw, hd, hh),(-hw, hd, hh)], ( 0, 0, 1)),  # 1 top +Z
+            ([(-hw,-hd,-hh),( hw,-hd,-hh),( hw,-hd, hh),(-hw,-hd, hh)], ( 0,-1, 0)),  # 2 front -Y
+            ([(-hw, hd, hh),( hw, hd, hh),( hw, hd,-hh),(-hw, hd,-hh)], ( 0, 1, 0)),  # 3 back +Y
+            ([(-hw,-hd, hh),(-hw, hd, hh),(-hw, hd,-hh),(-hw,-hd,-hh)], (-1, 0, 0)),  # 4 left -X
+            ([( hw,-hd,-hh),( hw, hd,-hh),( hw, hd, hh),( hw,-hd, hh)], ( 1, 0, 0)),  # 5 right +X
         ]
 
         for fi, (corners, normal) in enumerate(face_quads):
@@ -242,7 +242,7 @@ class BrickMixin:
         node = GeomNode('solid_box')
         node.addGeom(geom)
         np = NodePath(node)
-        np.setTwoSided(False)
+        np.setTwoSided(True)
         np.setShaderOff()
         return np
 
@@ -1409,8 +1409,12 @@ class BrickMixin:
 
         # ── Editor mode only below this point ────────────────────────────────
         for brick, visual in self.brick_hitbox_visuals.items():
+            if brick.isEmpty():
+                continue
             self.update_brick_hitbox_visual_scale(brick, visual)
         for brick in list(self.brick_grass_shells.keys()):
+            if brick.isEmpty():
+                continue
             s = brick.getScale()
             p = brick.getPos()
             h = brick.getHpr()
@@ -1428,6 +1432,8 @@ class BrickMixin:
                 self.brick_last_pos[brick] = Vec3(p)
                 self.brick_last_hpr[brick] = Vec3(h)
         for brick in list(self.brick_wood_shells.keys()):
+            if brick.isEmpty():
+                continue
             s = brick.getScale()
             p = brick.getPos()
             h = brick.getHpr()
@@ -1445,6 +1451,8 @@ class BrickMixin:
                 self.brick_last_pos[brick] = Vec3(p)
                 self.brick_last_hpr[brick] = Vec3(h)
         for brick in list(self.brick_stone_shells.keys()):
+            if brick.isEmpty():
+                continue
             s = brick.getScale()
             p = brick.getPos()
             h = brick.getHpr()

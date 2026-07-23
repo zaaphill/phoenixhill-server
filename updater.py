@@ -9,7 +9,7 @@ import urllib.request
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-VERSION = "1.1.29"
+VERSION = "1.1.30"
 
 def _version_url():
     try:
